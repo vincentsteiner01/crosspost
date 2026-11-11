@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Crosspost">
+<title>Forgot password - Crosspost</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+</head>
+<body class="auth-page">
+<div class="bg-section"><img src="/img/signup-bg.svg" alt="" class="bg-image"><div class="login-main"><div class="login-card">
+      <form id="form-forgot" novalidate>
+        <a class="back-button" href="/login"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg><h1 class="back-title">Reset your password</h1></a>
+        <p class="form-subtitle small">Enter the email address of your account. We will send you a link to choose a new password.</p>
+        <div id="forgot-msg" class="auth-error" hidden></div>
+        <div class="form-group field"><label class="custom-label" for="forgot-email">Email</label><input type="text" id="forgot-email" class="form-control" placeholder="Enter your email address"></div>
+        <button type="submit" class="submit-btn"><svg class="spinner" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" opacity=".25"/><path d="M22 12a10 10 0 0 0-10-10" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg><span>Send reset link</span></button>
+      </form>
+      <div class="signup-row"><span class="muted-black">Remembered it?</span> <a href="/login" class="pink-link">Sign in</a></div>
+    </div></div></div>
+<script type="module" src="/src/pages/forgot.ts"></script>
+</body>
+</html>

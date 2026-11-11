@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="de-DE">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Crosspost">
+<title>Mit Amazon anmelden - Crosspost</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+</head>
+<body class="connect-page layout-box">
+<div class="box-wrap">
+  <header class="box-logo"><a href="/login"><svg viewBox="0 0 40 40" aria-hidden="true"><rect width="40" height="40" rx="8" fill="#f16a76"/><path d="M12 22a8 8 0 0 1 13.7-5.6M28 18a8 8 0 0 1-13.7 5.6" stroke="#fff" stroke-width="2.6" fill="none" stroke-linecap="round"/><path d="M26.5 11.5v5h-5M13.5 28.5v-5h5" stroke="#fff" stroke-width="2.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Crosspost</span></a></header>
+  <main>
+    <div class="box-card connect-card" data-provider="amazon" data-connects="amazon">
+      <h1>Anmelden</h1>
+      <form id="connect-form" novalidate>
+        <label for="connect-email" class="box-label">Amazon-Konto oder E-Mail-Adresse eingeben</label>
+        <input id="connect-email" class="box-input" type="text" autocomplete="email">
+        <div id="connect-error" class="connect-error" hidden></div>
+        <button type="submit" class="connect-next box-btn">Weiter</button>
+        <p class="box-small">Indem Sie fortfahren, erklären Sie sich mit den <a href="/terms">Nutzungsbedingungen</a> und der <a href="/privacy">Datenschutzerklärung</a> von Crosspost einverstanden.</p>
+        <a href="#" class="box-help" id="connect-help">Benötigst du Hilfe? <i></i></a>
+        <p class="connect-help" id="connect-help-text" hidden>Ist die Verbindung zu Amazon eingerichtet, leitet dich diese Seite direkt zur Anmeldung bei Amazon weiter – dein Passwort gibst du nur dort ein, nie hier. Solange sie nicht eingerichtet ist, wird das Konto nur als Demo in diesem Browser gemerkt.</p>
+        <div class="connect-actions" hidden><a href="/signup" class="connect-link">Konto erstellen</a></div>
+      </form>
+    </div>
+    <div class="box-divider"><span>Neu bei Crosspost?</span></div>
+    <a href="/signup" class="box-create">Dein Crosspost-Konto erstellen</a>
+  </main>
+  <footer class="box-foot">
+    <ul class="box-links"><li><a href="/terms">Nutzungsbedingungen</a></li><li><a href="/privacy">Datenschutzerklärung</a></li><li><a href="/login">Hilfe</a></li></ul>
+    <p>© 2026 Crosspost</p>
+  </footer>
+</div>
+<script type="module" src="/src/pages/connect.ts"></script>
+</body>
+</html>

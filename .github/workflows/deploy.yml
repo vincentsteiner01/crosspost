@@ -1,0 +1,56 @@
+# Builds the site and publishes it on GitHub Pages on every push to main.
+# Repository → Settings → Pages → Source: "GitHub Actions".
+# Repository → Settings → Secrets and variables → Actions → Variables:
+#   VITE_SERVER_URL, VITE_FACEBOOK_APP_ID, VITE_INSTAGRAM_APP_ID,
+#   VITE_TIKTOK_CLIENT_KEY, VITE_GOOGLE_CLIENT_ID, VITE_SNAPCHAT_CLIENT_ID
+# (all optional; they can also be entered later in the app under Settings → Integrations).
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - id: pages
+        uses: actions/configure-pages@v5
+      - run: npm ci
+      - run: npm run build
+        env:
+          BASE_PATH: ${{ steps.pages.outputs.base_path }}/
+          VITE_SERVER_URL: ${{ vars.VITE_SERVER_URL }}
+          VITE_FACEBOOK_APP_ID: ${{ vars.VITE_FACEBOOK_APP_ID }}
+          VITE_INSTAGRAM_APP_ID: ${{ vars.VITE_INSTAGRAM_APP_ID }}
+          VITE_TIKTOK_CLIENT_KEY: ${{ vars.VITE_TIKTOK_CLIENT_KEY }}
+          VITE_GOOGLE_CLIENT_ID: ${{ vars.VITE_GOOGLE_CLIENT_ID }}
+          VITE_SNAPCHAT_CLIENT_ID: ${{ vars.VITE_SNAPCHAT_CLIENT_ID }}
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

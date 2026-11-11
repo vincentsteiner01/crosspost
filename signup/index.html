@@ -1,0 +1,54 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Crosspost">
+<title>Sign up - Crosspost</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+</head>
+<body class="auth-page">
+
+<div class="bg-section">
+  <img src="/img/signup-bg.svg" alt="" class="bg-image">
+  <div class="login-main">
+    <div class="login-card">
+      <form id="form-auth" data-mode="signup" novalidate>
+        <div id="titleSection" class="title-section">
+          <h3 class="form-title">Create your account</h3>
+          <span class="form-subtitle">Start repurposing your content for free</span>
+        </div>
+        <div id="auth-error" class="auth-error" hidden></div>
+        <div id="socialButtons">
+<div class="form-group"><a class="provider-btn provider-link" id="loginWithGoogle" href="/loginWithGoogle"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><path fill="#4285F4" d="M22.5 12.2c0-.8-.1-1.5-.2-2.2H12v4.2h5.9a5 5 0 0 1-2.2 3.3v2.8h3.6c2-1.9 3.2-4.7 3.2-8.1z"/><path fill="#34A853" d="M12 23c3 0 5.5-1 7.3-2.7l-3.6-2.8c-1 .7-2.2 1.1-3.7 1.1-2.9 0-5.3-1.9-6.2-4.5H2.2v2.8A11 11 0 0 0 12 23z"/><path fill="#FBBC05" d="M5.8 14.1a6.6 6.6 0 0 1 0-4.2V7.1H2.2a11 11 0 0 0 0 9.8l3.6-2.8z"/><path fill="#EA4335" d="M12 5.4c1.6 0 3 .6 4.2 1.6l3.2-3.1A11 11 0 0 0 2.2 7.1l3.6 2.8C6.7 7.3 9.1 5.4 12 5.4z"/></svg><strong>Continue with Google</strong></a></div>
+<div class="form-group"><button type="button" class="provider-btn" id="loginWithEmailBtn"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m22 7-9 5.7a2 2 0 0 1-2 0L2 7"/><rect x="2" y="4" width="20" height="16" rx="2"/></svg><strong>Continue with email</strong></button></div>
+<div class="form-group"><a class="provider-btn provider-link" id="loginWithYoutube" href="/loginWithYoutube"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><rect x="0" y="3.5" width="24" height="17" rx="5" fill="#F61C0D"/><path d="M9.5 8.2v7.6l6.4-3.8z" fill="#fff"/></svg><strong>Continue with YouTube</strong></a></div>
+<div class="form-group"><a class="provider-btn provider-link" id="signupWithFacebook" href="/signupWithFacebook"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><path fill="#385C8E" d="M9.3 23.6h4.5V12.8h3.4l.5-4.2h-3.9V6c0-1 .4-1.6 1.6-1.6h2.4V.6c-.4 0-1.8-.2-3.4-.2-3.4 0-5.1 2-5.1 5.2v3h-3v4.2h3z"/></svg><strong>Continue with Facebook</strong></a></div>
+<div class="form-group"><a class="provider-btn provider-link" id="loginWithAmazon" href="/signinWithAmazon"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><text x="12" y="16.5" text-anchor="middle" font-family="Arial, sans-serif" font-weight="700" font-size="22" fill="#37474F">a</text><path d="M4 18.6c4.6 2.8 11 2.9 15.6.2" stroke="#FFB300" stroke-width="1.6" fill="none" stroke-linecap="round"/><path d="M17.6 17.6l2.3.9-.6 2.3" stroke="#FFB300" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg><strong>Continue with Amazon</strong></a></div>
+        </div>
+        <div id="emailSection" hidden>
+          <button class="back-button" id="backButton" type="button"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg><h1 class="back-title">Sign up with email</h1></button>
+          <div class="form-group field"><label class="custom-label" for="auth-name">Name</label><input type="text" id="auth-name" class="form-control" placeholder="Enter your name" autocomplete="name"></div>
+          <div class="form-group field">
+            <label class="custom-label" for="auth-email">Email</label>
+            <input type="text" id="auth-email" class="form-control" placeholder="Enter your email address" autocomplete="email">
+          </div>
+          <div class="form-group field">
+            <label class="custom-label" for="auth-password">Password</label>
+            <div class="password-wrapper">
+              <input type="password" id="auth-password" class="form-control" placeholder="Password" maxlength="100" autocomplete="new-password">
+              <button type="button" id="toggle-password" class="toggle-password" aria-label="Show password"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M1.6 8.5C1.5 8.3 1.5 8.3 1.5 8s0-.3.1-.5C2.4 6.3 4.6 3.3 8 3.3s5.6 3 6.4 4.2c.1.2.1.2.1.5s0 .3-.1.5c-.8 1.2-3 4.2-6.4 4.2S2.4 9.7 1.6 8.5z" stroke="#9CA3AF" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><circle cx="8" cy="8" r="2" stroke="#9CA3AF" stroke-width="1.3"/></svg></button>
+            </div>
+          </div>
+          
+          <button id="auth-submit" type="submit" class="submit-btn"><svg class="spinner" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" opacity=".25"/><path d="M22 12a10 10 0 0 0-10-10" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg><span>Create account</span></button>
+        </div>
+      </form>
+      <div class="signup-row"><span class="muted-black">Already have an account?</span> <a href="/login" class="pink-link" id="signin-btn-link">Sign in</a></div>
+      <div class="terms-row"><a href="/terms" target="_blank">Terms of service</a> - <a href="/privacy" target="_blank">Privacy policy</a></div>
+    </div>
+  </div>
+</div>
+<script type="module" src="/src/pages/login.ts"></script>
+</body>
+</html>
