@@ -120,10 +120,13 @@ async function exchange({ platform, code, redirect_uri, code_verifier }, env) {
       const long = await call(`${GRAPH}/oauth/access_token?${new URLSearchParams({ ...app, grant_type: 'fb_exchange_token', fb_exchange_token: token })}`).catch(() => null);
       if (long?.access_token) { token = long.access_token; expires_in = long.expires_in; }
     }
-    // The Instagram accounts the person shared during sign-in – no Facebook Page involved.
-    const assigned = await call(`${GRAPH}/me/assigned_instagram_accounts?fields=id,username&access_token=${encodeURIComponent(token)}`);
-    const accounts = (assigned.data || []).filter((a) => a.id);
-    if (!accounts.length) throw new Error('Meta did not share an Instagram account. Connect again and select your Instagram professional account.');
+    const { accounts, via, diag } = await findInstagramAccounts(token, env);
+    if (!accounts.length) {
+      // Only what Meta said about the token (no token itself), to see where the account went.
+      console.log(JSON.stringify({ event: 'instagram_no_account', diag }));
+      throw new Error('Meta did not share an Instagram account. Connect again and select your Instagram professional account.');
+    }
+    console.log(JSON.stringify({ event: 'instagram_connected', via, accounts }));
     return { access_token: token, expires_in, account_id: accounts[0].id, name: accounts[0].username, accounts: accounts.map((a) => ({ id: a.id, name: a.username })) };
   }
 
@@ -150,6 +153,35 @@ async function exchange({ platform, code, redirect_uri, code_verifier }, env) {
   }
 
   throw new Error(`Unknown platform ${platform}`);
+}
+
+/**
+ * Instagram accounts the person shared in the Unified Login dialog – no Facebook Page involved.
+ * 1. /me/assigned_instagram_accounts (the system user's assigned accounts)
+ * 2. the token's granular scopes (debug_token): the IDs picked for instagram_* permissions
+ */
+async function findInstagramAccounts(token, env) {
+  const t = encodeURIComponent(token);
+  const diag = {};
+  const attempt = async (label, url) => {
+    try { return await call(url); } catch (e) { diag[label] = { error: e.message }; return null; }
+  };
+
+  const assigned = await attempt('assigned', `${GRAPH}/me/assigned_instagram_accounts?fields=id,username&access_token=${t}`);
+  const direct = (assigned?.data || []).filter((a) => a.id);
+  if (assigned) diag.assigned = direct.map((a) => a.id);
+  if (direct.length) return { accounts: direct, via: 'assigned_instagram_accounts', diag };
+
+  const appToken = encodeURIComponent(`${env.FACEBOOK_APP_ID}|${env.FACEBOOK_APP_SECRET}`);
+  const dbg = (await attempt('debug_token', `${GRAPH}/debug_token?input_token=${t}&access_token=${appToken}`))?.data || {};
+  diag.token = { type: dbg.type, is_valid: dbg.is_valid, expires_at: dbg.expires_at, scopes: dbg.scopes, granular_scopes: dbg.granular_scopes };
+  const ids = [...new Set((dbg.granular_scopes || []).filter((g) => /^instagram_/.test(g.scope)).flatMap((g) => g.target_ids || []))];
+  const found = [];
+  for (const id of ids.slice(0, 10)) {
+    const node = await attempt(`node_${id}`, `${GRAPH}/${id}?fields=id,username&access_token=${t}`);
+    if (node?.username) found.push({ id: node.id, username: node.username });
+  }
+  return { accounts: found, via: 'granular_scopes', diag };
 }
 
 async function refresh({ platform, refresh_token }, env) {
