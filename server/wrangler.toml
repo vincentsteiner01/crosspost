@@ -8,8 +8,8 @@ compatibility_date = "2025-01-01"
 ALLOWED_ORIGIN = "https://vincentsteiner01.github.io"
 # Unaudited TikTok apps may only post privately. Change after TikTok's audit, e.g. PUBLIC_TO_EVERYONE.
 TIKTOK_PRIVACY = "SELF_ONLY"
-TIKTOK_VERIFICATION_FILENAME = ""
-TIKTOK_VERIFICATION_CONTENT = ""
+TIKTOK_VERIFICATION_FILENAME = "tiktokF3W9nYQ2lkglDFjWrNSWbMaWAQ9d89Vn.txt"
+TIKTOK_VERIFICATION_CONTENT = "tiktok-developers-site-verification=F3W9nYQ2lkglDFjWrNSWbMaWAQ9d89Vn"
 
 [[r2_buckets]]
 binding = "MEDIA"
