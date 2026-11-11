@@ -64,7 +64,7 @@ export default {
       if (url.pathname === '/') return json({ ok: true, service: 'crosspost' });
       const api = await engine.handle(request, env, url);
       if (api !== undefined) return json(api);
-      return json({ error: 'Not found' }, 404);
+      return json({ error: 'Nicht gefunden' }, 404);
     } catch (e) {
       return json({ error: e.message || String(e) }, e instanceof HttpError ? e.status : 400);
     }
@@ -96,7 +96,7 @@ async function call(input, init) {
   let msg;
   if (e && typeof e === 'object') {
     // Meta: error_user_title / error_user_msg explain the problem; code and subcode identify it.
-    msg = [e.error_user_title, e.error_user_msg || e.message].filter(Boolean).join(': ') || 'Unknown error';
+    msg = [e.error_user_title, e.error_user_msg || e.message].filter(Boolean).join(': ') || 'Unbekannter Fehler';
     const ids = [e.code != null && `code ${e.code}`, e.error_subcode && `subcode ${e.error_subcode}`].filter(Boolean).join(', ');
     if (ids) msg += ` (${ids})`;
   } else {
@@ -107,11 +107,11 @@ async function call(input, init) {
 }
 
 const form = (values) => ({ method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(values) });
-const need = (env, ...names) => { for (const n of names) if (!env[n]) throw new Error(`Server setting ${n} is missing`); };
+const need = (env, ...names) => { for (const n of names) if (!env[n]) throw new Error(`Server-Einstellung ${n} fehlt`); };
 
 // ---------- sign-in ----------
 async function exchange({ platform, code, redirect_uri, code_verifier }, env) {
-  if (!code || !redirect_uri) throw new Error('code and redirect_uri are required');
+  if (!code || !redirect_uri) throw new Error('code und redirect_uri sind erforderlich');
 
   if (platform === 'facebook') {
     need(env, 'FACEBOOK_APP_ID', 'FACEBOOK_APP_SECRET');
@@ -120,7 +120,7 @@ async function exchange({ platform, code, redirect_uri, code_verifier }, env) {
     const long = await call(`${GRAPH}/oauth/access_token?${new URLSearchParams({ grant_type: 'fb_exchange_token', client_id: env.FACEBOOK_APP_ID, client_secret: env.FACEBOOK_APP_SECRET, fb_exchange_token: short.access_token })}`);
     const pages = await call(`${GRAPH}/me/accounts?fields=id,name,access_token&access_token=${encodeURIComponent(long.access_token)}`);
     const page = pages.data?.[0];
-    if (!page) throw new Error('No Facebook Page found. Posting needs a Page you manage.');
+    if (!page) throw new Error('Keine Facebook-Seite gefunden. Zum Posten brauchst du eine Seite, die du verwaltest.');
     return { access_token: page.access_token, account_id: page.id, name: page.name, pages: pages.data.map((p) => ({ id: p.id, name: p.name })) };
   }
 
@@ -144,7 +144,7 @@ async function exchange({ platform, code, redirect_uri, code_verifier }, env) {
       console.log(JSON.stringify({ event: 'instagram_no_account', diag }));
       // Typical cause: the account was shared with Crosspost before. Meta then marks it
       // "Zuvor geteilt" and keeps it with the earlier system user, not the new one.
-      throw new Error('Meta did not share an Instagram account with this sign-in. If the account was connected before: in Meta Business Suite open Settings → Connected apps → Crosspost, remove the app, then connect Instagram again and select your account.');
+      throw new Error('Meta hat bei dieser Anmeldung kein Instagram-Konto freigegeben. Falls das Konto schon einmal verbunden war: Öffne in der Meta Business Suite Einstellungen → Verbundene Apps → Crosspost, entferne die App, verbinde Instagram dann neu und wähle dein Konto aus.');
     }
     console.log(JSON.stringify({ event: 'instagram_connected', via, accounts }));
     return { access_token: token, expires_in, account_id: accounts[0].id, name: accounts[0].username, accounts: accounts.map((a) => ({ id: a.id, name: a.username })) };
@@ -172,7 +172,7 @@ async function exchange({ platform, code, redirect_uri, code_verifier }, env) {
     return { access_token: t.access_token, refresh_token: t.refresh_token, expires_in: t.expires_in };
   }
 
-  throw new Error(`Unknown platform ${platform}`);
+  throw new Error(`Unbekannte Plattform ${platform}`);
 }
 
 /**
@@ -226,7 +226,7 @@ async function findInstagramAccounts(token, env) {
 }
 
 async function refresh({ platform, refresh_token }, env) {
-  if (!refresh_token) throw new Error('refresh_token is required');
+  if (!refresh_token) throw new Error('refresh_token ist erforderlich');
 
   if (platform === 'youtube') {
     need(env, 'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET');
@@ -240,7 +240,7 @@ async function refresh({ platform, refresh_token }, env) {
     return { access_token: t.access_token, refresh_token: t.refresh_token, expires_in: t.expires_in };
   }
 
-  throw new Error(`Refreshing ${platform} is not supported`);
+  throw new Error(`Für ${platform} lässt sich der Zugang nicht erneuern`);
 }
 
 // ---------- media ----------
@@ -248,7 +248,7 @@ async function refresh({ platform, refresh_token }, env) {
 // go after a day or two, sched/ (planned posts) after 60 days – or as soon as every
 // destination has the video.
 async function putMedia(request, env, url) {
-  if (!env.MEDIA) throw new Error('R2 bucket MEDIA is not bound');
+  if (!env.MEDIA) throw new Error('R2-Bucket MEDIA ist nicht eingebunden');
   const name = (url.searchParams.get('name') || 'video.mp4').replace(/[^\w.-]+/g, '_').slice(-80);
   const prefix = url.searchParams.get('purpose') === 'schedule' ? 'sched' : 'tmp';
   const key = `${prefix}/${crypto.randomUUID()}-${name}`;
@@ -258,7 +258,7 @@ async function putMedia(request, env, url) {
 
 async function getMedia(env, key, cors) {
   const obj = await env.MEDIA.get(decodeURIComponent(key));
-  if (!obj) return new Response('Not found', { status: 404, headers: cors });
+  if (!obj) return new Response('Nicht gefunden', { status: 404, headers: cors });
   return new Response(obj.body, { headers: { ...cors, 'Content-Type': obj.httpMetadata?.contentType || 'video/mp4', 'Content-Length': String(obj.size) } });
 }
 
@@ -271,7 +271,7 @@ const TRIAL = ['MANUAL', 'SS_PERFORMANCE'];
  *           in the TikTok app) or "direct".
  */
 async function publish({ platform, access_token, account_id, title, caption, video_url, options = {} }, env) {
-  if (!access_token || !video_url) throw new Error('access_token and video_url are required');
+  if (!access_token || !video_url) throw new Error('access_token und video_url sind erforderlich');
 
   if (platform === 'facebook') {
     const v = await call(`${GRAPH}/${account_id}/videos`, form({ file_url: video_url, description: caption || '', title: title || '', access_token }));
@@ -279,7 +279,7 @@ async function publish({ platform, access_token, account_id, title, caption, vid
   }
 
   if (platform === 'instagram') {
-    if (!account_id) throw new Error('Instagram account ID is missing – connect Instagram again.');
+    if (!account_id) throw new Error('Die Instagram-Konto-ID fehlt – verbinde Instagram neu.');
     const values = { media_type: 'REELS', video_url, caption: caption || '', access_token };
     if (TRIAL.includes(options.trial)) values.trial_params = JSON.stringify({ graduation_strategy: options.trial });
     const container = await call(`${GRAPH}/${account_id}/media`, form(values));
@@ -293,12 +293,12 @@ async function publish({ platform, access_token, account_id, title, caption, vid
       return await tiktokPublish({ access_token, title, caption, video_url, options }, env);
     } catch (e) {
       // Connected before drafts were added (video.upload) or the permission was turned off.
-      if (e.detail?.code === 'scope_not_authorized') throw new Error('TikTok needs one more permission for this. Reconnect TikTok under Connected accounts, then press Retry.');
+      if (e.detail?.code === 'scope_not_authorized') throw new Error('TikTok braucht dafür noch eine Berechtigung. Verbinde TikTok unter „Verbundene Konten“ neu und klick dann auf „Erneut versuchen“.');
       throw e;
     }
   }
 
-  throw new Error(`Publishing to ${platform} is not supported by this server`);
+  throw new Error(`Dieser Server kann nicht auf ${platform} veröffentlichen`);
 }
 
 async function tiktokPublish({ access_token, title, caption, video_url, options }, env) {
@@ -336,7 +336,7 @@ async function tiktokStatus(access_token, publish_id) {
   const d = s.data || {};
   if (d.status === 'FAILED') {
     console.log(JSON.stringify({ event: 'tiktok_failed', fail_reason: d.fail_reason }));
-    throw new Error(`TikTok could not post the video: ${d.fail_reason || 'unknown reason'}`);
+    throw new Error(`TikTok konnte das Video nicht posten: ${d.fail_reason || 'unbekannter Grund'}`);
   }
   if (d.status !== 'PUBLISH_COMPLETE' && d.status !== 'SEND_TO_USER_INBOX') return { pending: true, container_id: publish_id, status: d.status };
   const postId = d.publicaly_available_post_id?.[0];
@@ -346,14 +346,14 @@ async function tiktokStatus(access_token, publish_id) {
 /** Instagram: check a Reel container; once Instagram has processed the video, publish it. TikTok: check the post. */
 async function publishStatus({ platform, access_token, account_id, container_id }) {
   if (platform === 'tiktok') {
-    if (!access_token || !container_id) throw new Error('access_token and container_id are required');
+    if (!access_token || !container_id) throw new Error('access_token und container_id sind erforderlich');
     return tiktokStatus(access_token, container_id);
   }
-  if (platform !== 'instagram') throw new Error(`Status checks are not supported for ${platform}`);
-  if (!access_token || !account_id || !container_id) throw new Error('access_token, account_id and container_id are required');
+  if (platform !== 'instagram') throw new Error(`Für ${platform} gibt es keine Statusabfrage`);
+  if (!access_token || !account_id || !container_id) throw new Error('access_token, account_id und container_id sind erforderlich');
   const token = encodeURIComponent(access_token);
   const s = await call(`${GRAPH}/${container_id}?fields=status_code,status&access_token=${token}`);
-  if (s.status_code === 'ERROR' || s.status_code === 'EXPIRED') throw new Error(`Instagram could not process the video: ${s.status || s.status_code}`);
+  if (s.status_code === 'ERROR' || s.status_code === 'EXPIRED') throw new Error(`Instagram konnte das Video nicht verarbeiten: ${s.status || s.status_code}`);
   if (s.status_code === 'PUBLISHED') return { already_published: true };
   if (s.status_code !== 'FINISHED') return { pending: true, container_id, status: s.status_code };
 

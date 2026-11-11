@@ -106,7 +106,7 @@ function providerFor(platform: OAuthPlatform): Provider {
 export async function startOAuth(platform: OAuthPlatform, opts: { signIn?: boolean } = {}) {
   const p = providerFor(platform);
   const clientId = clientIdFor(platform);
-  if (!clientId) throw new Error(`No client ID for ${platform}`);
+  if (!clientId) throw new Error(`Für ${platform} fehlt die Client-ID.`);
   const pending: Pending = { platform, state: randomString(), signIn: !!opts.signIn, startedAt: Date.now() };
   const q = new URLSearchParams({
     [p.clientParam]: clientId,
@@ -133,7 +133,7 @@ async function serverCall<T>(path: string, body: unknown): Promise<T> {
   if (!server) throw new Error('Der Server für die Anmeldung ist noch nicht eingerichtet (Einstellungen → Integrationen).');
   const res = await fetch(server + path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `Server antwortete mit ${res.status}`);
+  if (!res.ok) throw new Error(data.error || `Der Server antwortete mit ${res.status}`);
   return data as T;
 }
 
@@ -169,8 +169,8 @@ export async function finishOAuth(): Promise<OAuthResult> {
 
   const err = get('error_description') || get('error_message') || get('error');
   if (err) throw new Error(`Die Anmeldung wurde abgebrochen: ${err}`);
-  if (!pending) throw new Error('Diese Anmeldung wurde nicht hier gestartet. Bitte noch einmal auf „Verbinden“ klicken.');
-  if (get('state') !== pending.state) throw new Error('Sicherheitsprüfung fehlgeschlagen (state stimmt nicht). Bitte noch einmal versuchen.');
+  if (!pending) throw new Error('Diese Anmeldung wurde nicht hier gestartet. Klick bitte noch einmal auf „Verbinden“.');
+  if (get('state') !== pending.state) throw new Error('Die Sicherheitsprüfung ist fehlgeschlagen (state stimmt nicht). Versuch es bitte noch einmal.');
 
   const { platform } = pending;
   const now = Date.now();
@@ -223,7 +223,7 @@ export async function finishOAuth(): Promise<OAuthResult> {
 
 /** Get a fresh access token with the refresh token kept from sign-in (needs our server). */
 export async function refreshAuth(platform: OAuthPlatform, auth: AccountAuth): Promise<AccountAuth> {
-  if (!auth.refreshToken) throw new Error('Kein dauerhafter Zugang gespeichert – bitte das Konto neu verbinden.');
+  if (!auth.refreshToken) throw new Error('Kein dauerhafter Zugang gespeichert – verbinde das Konto neu.');
   const reply = await serverCall<ExchangeReply>('/oauth/refresh', { platform, refresh_token: auth.refreshToken });
   return {
     ...auth,

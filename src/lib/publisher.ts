@@ -31,8 +31,8 @@ async function freshAuth(acc: Account) {
     return acc.auth;
   }
   throw new PublishError(acc.platform === 'youtube'
-    ? 'Der YouTube-Zugang ist abgelaufen (ohne Server gilt er nur eine Stunde). Bitte das Konto neu verbinden – mit eingerichtetem Server bleibt er dauerhaft.'
-    : 'Die Anmeldung ist abgelaufen – bitte das Konto neu verbinden.');
+    ? 'Der YouTube-Zugang ist abgelaufen (ohne Server gilt er nur eine Stunde). Verbinde das Konto neu – mit eingerichtetem Server bleibt er dauerhaft bestehen.'
+    : 'Die Anmeldung ist abgelaufen – verbinde das Konto neu.');
 }
 
 // YouTube refuses < and > in titles; titles max. 100, descriptions max. 5000 characters, tags max. 500 in total.
@@ -63,7 +63,7 @@ function putWithProgress(uploadUrl: string, file: File, onProgress?: (pct: numbe
     xhr.setRequestHeader('Content-Type', file.type || 'video/*');
     xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress?.(Math.round((e.loaded / e.total) * 100)); };
     xhr.onload = () => resolve({ status: xhr.status, body: xhr.responseText });
-    xhr.onerror = () => reject(new PublishError('Verbindung zu YouTube unterbrochen.'));
+    xhr.onerror = () => reject(new PublishError('Die Verbindung zu YouTube ist abgebrochen.'));
     xhr.send(file);
   });
 }
@@ -85,17 +85,17 @@ async function youtubeUpload(acc: Account, post: Post, caption: string, file: Fi
     commit();
     start = await begin(acc.auth.accessToken);
   }
-  if (start.status === 401) throw new PublishError('YouTube-Anmeldung abgelaufen – bitte das Konto neu verbinden.');
+  if (start.status === 401) throw new PublishError('Die YouTube-Anmeldung ist abgelaufen – verbinde das Konto neu.');
   if (start.status === 403) {
     const err = await start.json().catch(() => ({}));
     const reason = err.error?.errors?.[0]?.reason || err.error?.message || '';
-    throw new PublishError(/quota|limit/i.test(reason) ? 'Das tägliche Upload-Kontingent von YouTube ist aufgebraucht. Morgen erneut versuchen.' : `YouTube hat den Upload verweigert (${reason || 403}).`);
+    throw new PublishError(/quota|limit/i.test(reason) ? 'Das tägliche Upload-Kontingent von YouTube ist aufgebraucht. Versuch es morgen noch einmal.' : `YouTube hat den Upload verweigert (${reason || 403}).`);
   }
-  if (!start.ok) throw new PublishError(`YouTube lehnte den Upload ab (${start.status}).`);
+  if (!start.ok) throw new PublishError(`YouTube hat den Upload abgelehnt (${start.status}).`);
   const uploadUrl = start.headers.get('Location');
   if (!uploadUrl) throw new PublishError('YouTube hat keine Upload-Adresse geliefert.');
   const put = await putWithProgress(uploadUrl, file, onProgress);
-  if (put.status < 200 || put.status >= 300) throw new PublishError(`Upload zu YouTube fehlgeschlagen (${put.status}).`);
+  if (put.status < 200 || put.status >= 300) throw new PublishError(`Der Upload zu YouTube ist fehlgeschlagen (${put.status}).`);
   const video = JSON.parse(put.body);
   return video.snippet?.title && /#shorts/i.test(video.snippet.title) ? `https://www.youtube.com/shorts/${video.id}` : `https://www.youtube.com/watch?v=${video.id}`;
 }
@@ -115,23 +115,23 @@ async function uploadToServer(post: Post, file: File): Promise<string> {
   // Uploads need a server session, so strangers can't store files on our server.
   const res = await authedFetch(`/media?name=${encodeURIComponent(file.name)}`, { method: 'PUT', headers: { 'Content-Type': file.type || 'application/octet-stream' }, body: file });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok || !data.url) throw new PublishError(data.error || 'Das Video konnte nicht auf den Server geladen werden.');
+  if (!res.ok || !data.url) throw new PublishError(data.error || 'Das Video konnte nicht auf den Server hochgeladen werden.');
   post.mediaUrl = data.url;
   return data.url;
 }
 
 /** Publish one post to one connected account. Returns a link to the post when the platform gives one. */
 export async function publishReal(acc: Account, post: Post, caption: string, onProgress?: (pct: number) => void): Promise<string | undefined> {
-  if (!acc.auth) throw new PublishError('Konto ist nur als Demo verbunden.');
+  if (!acc.auth) throw new PublishError('Das Konto ist nur als Demo verbunden.');
   // After a reload the file is no longer in memory, but this browser may have kept it.
   let file = files.get(post.id);
   if (!file) { file = await keptVideo(post.id); if (file) files.set(post.id, file); }
 
   if (acc.platform === 'snapchat') {
-    throw new PublishError('Snapchat erlaubt normalen Apps kein automatisches Posten. Bitte das Video in der Snapchat-App teilen.');
+    throw new PublishError('Snapchat erlaubt normalen Apps kein automatisches Posten. Teile das Video direkt in der Snapchat-App.');
   }
   if (acc.platform === 'youtube') {
-    if (!file) throw new PublishError('Das Video ist nicht mehr im Browser. Bitte den Beitrag öffnen und die Datei erneut wählen.');
+    if (!file) throw new PublishError('Das Video ist nicht mehr im Browser. Öffne den Post und wähl die Datei noch einmal aus.');
     return youtubeUpload(acc, post, caption, file, onProgress);
   }
 
@@ -139,7 +139,7 @@ export async function publishReal(acc: Account, post: Post, caption: string, onP
   const auth = await freshAuth(acc);
   let videoUrl = post.mediaUrl;
   if (!videoUrl) {
-    if (!file) throw new PublishError('Das Video ist nicht mehr im Browser. Bitte die Datei erneut wählen.');
+    if (!file) throw new PublishError('Das Video ist nicht mehr im Browser. Wähle die Datei noch einmal aus.');
     videoUrl = await uploadToServer(post, file);
   }
   let reply = await serverCall<PublishReply>('/publish', {
@@ -165,7 +165,7 @@ export async function publishReal(acc: Account, post: Post, caption: string, onP
   }
   if (reply.pending) {
     const name = acc.platform === 'tiktok' ? 'TikTok' : 'Instagram';
-    throw new PublishError(`${name} verarbeitet das Video nach 10 Minuten immer noch. Bitte später in ${name} nachsehen.`);
+    throw new PublishError(`${name} verarbeitet das Video nach 10 Minuten immer noch. Schau später in ${name} nach.`);
   }
   return reply.url;
 }

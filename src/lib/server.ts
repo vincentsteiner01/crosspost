@@ -22,14 +22,14 @@ async function sessionKey(): Promise<string> {
   const existing = getKey();
   if (existing) return existing;
   const acc = identityAccount();
-  if (!acc?.auth) throw new Error('Connect Instagram, YouTube or TikTok first – the server recognises you by that account.');
+  if (!acc?.auth) throw new Error('Verbinde zuerst Instagram, YouTube oder TikTok – an diesem Konto erkennt dich der Server.');
   const res = await fetch(`${serverUrl()}/api/session`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ platform: acc.platform, access_token: acc.auth.accessToken, account_id: acc.auth.remoteId }),
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok || !data.key) throw new Error(data.error || `Server answered ${res.status}`);
+  if (!res.ok || !data.key) throw new Error(data.error || `Der Server antwortete mit ${res.status}`);
   setKey(data.key);
   return data.key;
 }
@@ -45,7 +45,7 @@ export async function authedFetch(path: string, init: RequestInit = {}): Promise
 async function api<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
   const res = await authedFetch(path, { method, headers: body === undefined ? {} : { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `Server answered ${res.status}`);
+  if (!res.ok) throw new Error(data.error || `Der Server antwortete mit ${res.status}`);
   return data as T;
 }
 
@@ -59,7 +59,7 @@ export function runsOnServer(w: Workflow) {
 export async function linkWithCode(code: string) {
   const res = await fetch(`${serverUrl()}/api/link`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code }) });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok || !data.key) throw new Error(data.error || `Server answered ${res.status}`);
+  if (!res.ok || !data.key) throw new Error(data.error || `Der Server antwortete mit ${res.status}`);
   setKey(data.key);
 }
 
@@ -117,7 +117,7 @@ export const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 
 /** Put a file on the server (kept until every platform has it); reports progress in percent. */
 export async function uploadForLater(file: File, onProgress?: (pct: number) => void): Promise<string> {
-  if (file.size > MAX_UPLOAD_BYTES) throw new Error(`The video is ${Math.round(file.size / 1048576)} MB; the server takes up to 100 MB. Export it a little smaller (e.g. 1080p) and try again.`);
+  if (file.size > MAX_UPLOAD_BYTES) throw new Error(`Das Video hat ${Math.round(file.size / 1048576)} MB, der Server nimmt höchstens 100 MB. Exportiere es etwas kleiner (z. B. in 1080p) und versuch es noch einmal.`);
   const send = (key: string) => new Promise<{ status: number; body: string }>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open('PUT', `${serverUrl()}/media?purpose=schedule&name=${encodeURIComponent(file.name)}`);
@@ -125,14 +125,14 @@ export async function uploadForLater(file: File, onProgress?: (pct: number) => v
     xhr.setRequestHeader('Content-Type', file.type || 'video/mp4');
     xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress?.(Math.round((e.loaded / e.total) * 100)); };
     xhr.onload = () => resolve({ status: xhr.status, body: xhr.responseText });
-    xhr.onerror = () => reject(new Error('The connection to the server broke off during the upload.'));
+    xhr.onerror = () => reject(new Error('Die Verbindung zum Server ist beim Hochladen abgebrochen.'));
     xhr.send(file);
   });
   let res = await send(await sessionKey());
   if (res.status === 401) { setKey(null); res = await send(await sessionKey()); }
   const data = (() => { try { return JSON.parse(res.body); } catch { return {}; } })();
-  if (res.status === 413) throw new Error('The video is too big for the server (max. 100 MB).');
-  if (res.status < 200 || res.status >= 300 || !data.key) throw new Error(data.error || 'The video could not be uploaded to the server.');
+  if (res.status === 413) throw new Error('Das Video ist zu groß für den Server (max. 100 MB).');
+  if (res.status < 200 || res.status >= 300 || !data.key) throw new Error(data.error || 'Das Video konnte nicht auf den Server hochgeladen werden.');
   return data.key;
 }
 
@@ -167,8 +167,8 @@ function toPost(i: ServerItem): Post {
   return {
     id: `srv-${i.id}`,
     remote: { itemId: i.id, permalink: i.permalink ?? undefined, kind: i.kind, mediaId: fromInstagram ? i.source_media_id : undefined, sourceAccountId: i.source_account_id ?? undefined },
-    title: (i.title || caption.split('\n').map((s) => s.trim()).find(Boolean) || (fromInstagram ? 'Instagram video' : 'Video')).slice(0, 80), caption,
-    mediaName: fromInstagram ? 'Instagram video' : 'Video', mediaType: 'video/mp4', mediaSize: 0, thumb: i.thumbnail_url ?? undefined,
+    title: (i.title || caption.split('\n').map((s) => s.trim()).find(Boolean) || (fromInstagram ? 'Instagram-Video' : 'Video')).slice(0, 80), caption,
+    mediaName: fromInstagram ? 'Instagram-Video' : 'Video', mediaType: 'video/mp4', mediaSize: 0, thumb: i.thumbnail_url ?? undefined,
     createdAt: i.created_at, scheduledAt: waiting.length ? Math.min(...waiting) : i.created_at, workflowId: i.kind === 'workflow' ? i.workflow_id : undefined,
     deliveries: i.jobs.map((j) => ({ accountId: j.account_id, status: STATUS[j.status] ?? 'failed', caption: j.caption ?? '', error: j.error ?? undefined, url: j.url ?? undefined, at: j.updated_at ?? undefined, label: inInbox(j) ? store.TIKTOK_INBOX_LABEL : undefined })),
   };

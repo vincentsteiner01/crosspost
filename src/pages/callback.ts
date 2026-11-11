@@ -12,7 +12,7 @@ finishOAuth()
   .then((r) => {
     connectAccount(r.platform, r.handle, r.auth);
     status.textContent = 'Verbunden!';
-    detail.textContent = `${r.handle} ist jetzt verbunden. Du wirst weitergeleitet …`;
+    detail.textContent = `${r.handle} ist jetzt verbunden. Du wirst weitergeleitet…`;
     setTimeout(() => location.replace(url('dashboard/#/accounts')), 900);
   })
   .catch((e: Error) => {

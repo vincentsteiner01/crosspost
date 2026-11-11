@@ -1,5 +1,5 @@
 // Everything the app remembers lives in this browser's local storage.
-import type { PlatformId } from './platforms';
+import { RETIRED_PLATFORMS, type PlatformId } from './platforms';
 
 export interface User { name: string; email: string; passwordHash?: string; method: string; timezone: string; createdAt: number }
 /** Sign-in result from the platform; absent for demo connections. */
@@ -19,7 +19,7 @@ export interface Workflow {
 export type DeliveryStatus = 'scheduled' | 'publishing' | 'published' | 'handed-over' | 'failed' | 'draft';
 /** label: shown instead of "Published", e.g. for a TikTok draft that waits in the TikTok inbox. */
 export interface Delivery { accountId: string; status: DeliveryStatus; caption: string; error?: string; at?: number; url?: string; progress?: number; label?: string }
-export const TIKTOK_INBOX_LABEL = 'In your TikTok inbox';
+export const TIKTOK_INBOX_LABEL = 'Im TikTok-Posteingang';
 export interface YouTubeOptions {
   privacy: 'public' | 'unlisted' | 'private';
   /** Add #Shorts so vertical clips up to 3 minutes show in the Shorts feed. */
@@ -61,6 +61,21 @@ function load(): Db {
 }
 
 let db = load();
+// Accounts of platforms the app no longer offers go, and so do their places in workflows.
+{
+  const retired = new Set(RETIRED_PLATFORMS);
+  for (const [who, list] of Object.entries(db.accounts ?? {})) {
+    const gone = new Set(list.filter((a) => retired.has(a.platform as string)).map((a) => a.id));
+    if (!gone.size) continue;
+    db.accounts[who] = list.filter((a) => !gone.has(a.id));
+    for (const w of db.workflows?.[who] ?? []) {
+      w.destinationIds = w.destinationIds.filter((id) => !gone.has(id));
+      if (gone.has(w.sourceId)) w.active = false;
+    }
+  }
+}
+// Posts saved before the app was German keep their old English label.
+for (const list of Object.values(db.posts ?? {})) for (const p of list) for (const d of p.deliveries) if (d.label === 'In your TikTok inbox') d.label = TIKTOK_INBOX_LABEL;
 const listeners = new Set<() => void>();
 /** Tell the views something changed that isn't stored here (e.g. the inbox). */
 export const notify = () => listeners.forEach((l) => l());

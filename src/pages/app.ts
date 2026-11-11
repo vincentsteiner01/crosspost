@@ -19,10 +19,11 @@ const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&
 const isOAuth = (id: PlatformId): id is OAuthPlatform => (OAUTH_PLATFORMS as string[]).includes(id);
 
 // ---------- formatting ----------
-const fmtDate = (t: number) => new Date(t).toLocaleString(undefined, { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
-const fmtSize = (b: number) => (b > 1e6 ? `${(b / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1e3))} KB`);
+const fmtDate = (t: number) => new Date(t).toLocaleString('de-DE', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+const fmtSize = (b: number) => (b > 1e6 ? `${(b / 1e6).toFixed(1).replace('.', ',')} MB` : `${Math.max(1, Math.round(b / 1e3))} KB`);
+const accountsText = (n: number) => (n === 1 ? '1 Konto' : `${n} Konten`);
 const toLocalInput = (t: number) => { const d = new Date(t - new Date(t).getTimezoneOffset() * 60000); return d.toISOString().slice(0, 16); };
-const STATUS_LABEL: Record<string, string> = { scheduled: 'Scheduled', publishing: 'Publishing…', published: 'Published', 'handed-over': 'Scheduled on YouTube', failed: 'Failed', draft: 'Needs approval' };
+const STATUS_LABEL: Record<string, string> = { scheduled: 'Geplant', publishing: 'Wird veröffentlicht…', published: 'Veröffentlicht', 'handed-over': 'Bei YouTube geplant', failed: 'Fehlgeschlagen', draft: 'Wartet auf Freigabe' };
 
 function postStatus(p: Post): string {
   const s = p.deliveries.map((d) => d.status);
@@ -54,7 +55,7 @@ function modal(html: string, onMount: (el: HTMLElement, close: () => void) => vo
 }
 
 function confirmBox(title: string, text: string, ok: string, onOk: () => void) {
-  modal(`<h3>${esc(title)}</h3><p>${esc(text)}</p><div class="row"><button class="btn" data-x>Cancel</button><button class="btn primary" data-ok>${esc(ok)}</button></div>`, (el, close) => {
+  modal(`<h3>${esc(title)}</h3><p>${esc(text)}</p><div class="row"><button class="btn" data-x>Abbrechen</button><button class="btn primary" data-ok>${esc(ok)}</button></div>`, (el, close) => {
     el.querySelector('[data-x]')!.addEventListener('click', close);
     el.querySelector('[data-ok]')!.addEventListener('click', () => { close(); onOk(); });
   });
@@ -67,11 +68,11 @@ function confirmBox(title: string, text: string, ok: string, onOk: () => void) {
 // platform's limit.
 function checkDelivery(d: Delivery, post: Post): string | undefined {
   const acc = store.account(d.accountId);
-  if (!acc) return 'Account was disconnected';
+  if (!acc) return 'Das Konto wurde getrennt';
   const p = platform(acc.platform);
-  if (p.limit && d.caption.length > p.limit) return `Caption is ${d.caption.length} characters; ${p.name} allows ${p.limit}`;
-  if (!post.mediaName && ['tiktok', 'youtube', 'snapchat', 'amazon'].includes(p.id)) return `${p.name} needs a video`;
-  if (post.mediaType && !post.mediaType.startsWith('video') && ['tiktok', 'youtube'].includes(p.id)) return `${p.name} takes videos only, not pictures`;
+  if (p.limit && d.caption.length > p.limit) return `Die Beschreibung hat ${d.caption.length} Zeichen, ${p.name} erlaubt ${p.limit}`;
+  if (!post.mediaName && ['tiktok', 'youtube', 'snapchat', 'amazon'].includes(p.id)) return `${p.name} braucht ein Video`;
+  if (post.mediaType && !post.mediaType.startsWith('video') && ['tiktok', 'youtube'].includes(p.id)) return `${p.name} nimmt nur Videos, keine Bilder`;
   return undefined;
 }
 
@@ -105,7 +106,7 @@ function processQueue() {
         const acc = store.account(d.accountId);
         if (acc?.cloud && !acc.auth) {
           d.status = 'failed';
-          d.error = 'This account is connected through the server; posts to it need a video and go through the server. Create the post again with a video.';
+          d.error = 'Dieses Konto ist über den Server verbunden – Posts dorthin brauchen ein Video und laufen über den Server. Erstelle den Post noch einmal mit Video.';
           d.at = Date.now();
           continue;
         }
@@ -134,12 +135,12 @@ function processQueue() {
 // A run of a workflow: new content from the source becomes a post for each destination.
 function runWorkflow(w: Workflow, title?: string) {
   const src = store.account(w.sourceId);
-  if (!src) { toast('Connect the source account first'); return; }
+  if (!src) { toast('Verbinde zuerst das Quellkonto'); return; }
   const dests = w.destinationIds.map(store.account).filter(Boolean) as Account[];
-  if (!dests.length) { toast('Pick at least one destination'); return; }
+  if (!dests.length) { toast('Wähle mindestens ein Ziel aus'); return; }
   w.runs += 1;
-  const t = title ?? `New ${platform(src.platform).formats[0]?.toLowerCase() ?? 'post'} from @${src.handle} #${w.runs}`;
-  const caption = applyTemplate(w, t, `Sample caption from ${platform(src.platform).name}`);
+  const t = title ?? `Neu: ${platform(src.platform).formats[0] ?? 'Post'} von @${src.handle} #${w.runs}`;
+  const caption = applyTemplate(w, t, `Beispieltext von ${platform(src.platform).name}`);
   const post: Post = {
     id: store.uid(), title: t, caption, mediaName: `${src.handle}-${w.runs}.mp4`, mediaType: 'video/mp4', mediaSize: 8_400_000,
     createdAt: Date.now(), scheduledAt: Date.now() + w.delayMinutes * 60000, workflowId: w.id,
@@ -148,7 +149,7 @@ function runWorkflow(w: Workflow, title?: string) {
   store.saveWorkflow(w);
   store.savePost(post);
   processQueue();
-  toast(w.autoPublish ? 'Workflow ran: post queued for publishing' : 'Workflow ran: post waits for your approval');
+  toast(w.autoPublish ? 'Workflow ausgeführt: Post wird veröffentlicht' : 'Workflow ausgeführt: Post wartet auf deine Freigabe');
 }
 
 function applyTemplate(w: Workflow, title: string, caption: string) {
@@ -164,14 +165,14 @@ function fitCaption(caption: string, id: PlatformId) {
 
 // ---------- layout ----------
 const NAV = [
-  { href: '#/', label: 'Dashboard', icon: icons.home },
-  { href: '#/create', label: 'Create post', icon: icons.plus },
+  { href: '#/', label: 'Übersicht', icon: icons.home },
+  { href: '#/create', label: 'Post erstellen', icon: icons.plus },
   { href: '#/workflows', label: 'Workflows', icon: icons.flow },
-  { href: '#/inbox', label: 'Inbox', icon: icons.upload },
-  { href: '#/posts', label: 'Content', icon: icons.film },
-  { href: '#/calendar', label: 'Calendar', icon: icons.calendar },
-  { href: '#/accounts', label: 'Connected accounts', icon: icons.link },
-  { href: '#/settings', label: 'Settings', icon: icons.gear },
+  { href: '#/inbox', label: 'Eingang', icon: icons.upload },
+  { href: '#/posts', label: 'Inhalte', icon: icons.film },
+  { href: '#/calendar', label: 'Kalender', icon: icons.calendar },
+  { href: '#/accounts', label: 'Verbundene Konten', icon: icons.link },
+  { href: '#/settings', label: 'Einstellungen', icon: icons.gear },
 ];
 
 function shell(title: string, body: string, route: string) {
@@ -182,17 +183,17 @@ function shell(title: string, body: string, route: string) {
     <a class="brand" href="#/">${icons.logoMark}<span>Crosspost</span></a>
     <nav class="nav">${NAV.map((n) => `<a href="${n.href}" class="${route === n.href ? 'active' : ''}">${n.icon}<span>${n.label}</span>${n.href === '#/posts' && pending ? `<span class="count">${pending}</span>` : ''}${n.href === '#/inbox' && inboxItems().length ? `<span class="count">${inboxItems().length}</span>` : ''}</a>`).join('')}</nav>
     <div class="side-foot">
-      <a class="me" href="#/settings"><div class="avatar">${esc((u.name || 'C')[0]!.toUpperCase())}</div><div class="me-text"><b>${esc(u.name || 'Your Crosspost')}</b><small>${u.email === store.LOCAL_EMAIL ? 'Settings' : esc(u.email)}</small></div></a>
+      <a class="me" href="#/settings"><div class="avatar">${esc((u.name || 'C')[0]!.toUpperCase())}</div><div class="me-text"><b>${esc(u.name || 'Dein Crosspost')}</b><small>${u.email === store.LOCAL_EMAIL ? 'Einstellungen' : esc(u.email)}</small></div></a>
     </div>
   </aside>
   <div class="scrim" data-action="close-menu"></div>
   <div class="main">
     <header class="topbar">
-      <button class="menu-btn" data-action="menu" aria-label="Menu">${icons.menu}</button>
+      <button class="menu-btn" data-action="menu" aria-label="Menü">${icons.menu}</button>
       <h1>${esc(title)}</h1>
-      ${OAUTH_PLATFORMS.some(isConfigured) ? '' : `<span class="demo-pill" title="No platform sign-in is set up yet (Settings → Integrations), so publishing is simulated.">Demo mode</span>`}
+      ${OAUTH_PLATFORMS.some(isConfigured) ? '' : `<span class="demo-pill" title="Noch keine Plattform-Anmeldung eingerichtet (Einstellungen → Integrationen) – Veröffentlichen wird deshalb nur simuliert.">Demo-Modus</span>`}
       <span class="spacer"></span>
-      ${route === '#/create' ? '' : `<a class="btn primary" href="#/create">${icons.plus}<span class="label">Create post</span></a>`}
+      ${route === '#/create' ? '' : `<a class="btn primary" href="#/create">${icons.plus}<span class="label">Post erstellen</span></a>`}
     </header>
     <main class="content">${body}</main>
   </div>
@@ -203,20 +204,20 @@ function shell(title: string, body: string, route: string) {
 function postRow(p: Post, actions = true) {
   const status = postStatus(p);
   return `<div class="post-row">
-    <a class="thumb" href="#/post?id=${encodeURIComponent(p.id)}" aria-label="Open post">${p.thumb ? `<img src="${esc(p.thumb)}" alt="">` : icons.play}</a>
+    <a class="thumb" href="#/post?id=${encodeURIComponent(p.id)}" aria-label="Post öffnen">${p.thumb ? `<img src="${esc(p.thumb)}" alt="">` : icons.play}</a>
     <div class="post-main">
-      <a class="post-link" href="#/post?id=${encodeURIComponent(p.id)}"><b>${esc(p.title || 'Untitled post')}</b></a>
-      <small>${STATUS_LABEL[status]} · ${fmtDate(p.scheduledAt)}${p.workflowId ? ' · via workflow' : ''}${p.remote?.permalink ? ` · <a href="${esc(p.remote.permalink)}" target="_blank" rel="noopener">Original</a>` : ''}</small>
+      <a class="post-link" href="#/post?id=${encodeURIComponent(p.id)}"><b>${esc(p.title || 'Post ohne Titel')}</b></a>
+      <small>${STATUS_LABEL[status]} · ${fmtDate(p.scheduledAt)}${p.workflowId ? ' · über Workflow' : ''}${p.remote?.permalink ? ` · <a href="${esc(p.remote.permalink)}" target="_blank" rel="noopener">Original</a>` : ''}</small>
       <div class="chips">${p.deliveries.map((d) => {
         const a = store.account(d.accountId);
-        return `<${d.url ? `a href="${esc(d.url)}" target="_blank" rel="noopener"` : 'span'} class="chip ${d.status}" title="${esc(d.error ?? (d.label === store.TIKTOK_INBOX_LABEL ? 'Open the TikTok app → Inbox → the notification from Crosspost Studio, then post it there' : STATUS_LABEL[d.status]!))}">${a ? badge(a.platform, 18) : ''}${a ? '@' + esc(a.handle) : 'removed'} · ${d.status === 'published' && d.label ? esc(d.label) : STATUS_LABEL[d.status]}${d.status === 'publishing' && d.progress !== undefined ? ` ${d.progress}%` : ''}${d.error ? ' – ' + esc(d.error) : ''}</${d.url ? 'a' : 'span'}>`;
+        return `<${d.url ? `a href="${esc(d.url)}" target="_blank" rel="noopener"` : 'span'} class="chip ${d.status}" title="${esc(d.error ?? (d.label === store.TIKTOK_INBOX_LABEL ? 'Öffne die TikTok-App → Posteingang → die Benachrichtigung von Crosspost Studio und poste das Video dort' : STATUS_LABEL[d.status]!))}">${a ? badge(a.platform, 18) : ''}${a ? '@' + esc(a.handle) : 'getrennt'} · ${d.status === 'published' && d.label ? esc(d.label) : STATUS_LABEL[d.status]}${d.status === 'publishing' && d.progress !== undefined ? ` ${d.progress}&nbsp;%` : ''}${d.error ? ' – ' + esc(d.error) : ''}</${d.url ? 'a' : 'span'}>`;
       }).join('')}</div>
     </div>
     ${actions ? `<div class="post-actions">
-      ${status === 'draft' ? `<button class="btn small primary" data-action="approve" data-id="${p.id}">Approve</button>` : ''}
-      ${p.deliveries.some((d) => d.status === 'failed') ? `<button class="btn small" data-action="retry" data-id="${p.id}">Retry</button>` : ''}
-      ${(status === 'draft' || status === 'scheduled') && !p.remote ? `<a class="btn small" href="#/create?edit=${p.id}">Edit</a>` : ''}
-      <button class="icon-btn" data-action="delete-post" data-id="${p.id}" aria-label="Delete">${icons.trash}</button>
+      ${status === 'draft' ? `<button class="btn small primary" data-action="approve" data-id="${p.id}">Freigeben</button>` : ''}
+      ${p.deliveries.some((d) => d.status === 'failed') ? `<button class="btn small" data-action="retry" data-id="${p.id}">Erneut versuchen</button>` : ''}
+      ${(status === 'draft' || status === 'scheduled') && !p.remote ? `<a class="btn small" href="#/create?edit=${p.id}">Bearbeiten</a>` : ''}
+      <button class="icon-btn" data-action="delete-post" data-id="${p.id}" aria-label="Löschen">${icons.trash}</button>
     </div>` : ''}
   </div>`;
 }
@@ -229,33 +230,33 @@ function viewDashboard() {
   const hasSource = accs.some((a) => platform(a.platform).source);
   const hasDest = accs.some((a) => platform(a.platform).destination);
   const steps = [
-    { done: hasSource, title: 'Connect a source', text: 'Where your content comes from, e.g. TikTok or YouTube.', href: '#/accounts' },
-    { done: accs.filter((a) => platform(a.platform).destination).length >= 2, title: 'Connect destinations', text: 'Every place you want to publish to.', href: '#/accounts' },
-    { done: wfs.length > 0, title: 'Create a workflow', text: 'Send new content from one account to many, automatically.', href: '#/workflows/new' },
-    { done: deliveries.some((d) => d.status === 'published'), title: 'Publish your first post', text: 'Upload once, post everywhere.', href: '#/create' },
+    { done: hasSource, title: 'Quelle verbinden', text: 'Woher deine Inhalte kommen, z. B. TikTok oder YouTube.', href: '#/accounts' },
+    { done: accs.filter((a) => platform(a.platform).destination).length >= 2, title: 'Ziele verbinden', text: 'Überall, wo du veröffentlichen willst.', href: '#/accounts' },
+    { done: wfs.length > 0, title: 'Workflow erstellen', text: 'Neue Inhalte automatisch von einem Konto an viele schicken.', href: '#/workflows/new' },
+    { done: deliveries.some((d) => d.status === 'published'), title: 'Ersten Post veröffentlichen', text: 'Einmal hochladen, überall posten.', href: '#/create' },
   ];
   const u = store.currentUser()!;
-  return shell('Dashboard', `
+  return shell('Übersicht', `
     <section class="card welcome">
-      <h2>Hi ${esc(u.name || 'there')}, ready to repurpose?</h2>
-      <p>Upload a video once and publish it to all your channels, or let a workflow copy every new post automatically.</p>
-      <div class="row"><a class="btn" href="#/create">${icons.upload}Upload &amp; cross-post</a><a class="btn" href="#/workflows/new">${icons.flow}New workflow</a></div>
+      <h2>Hallo${u.name ? ` ${esc(u.name)}` : ''}, bereit zum Crossposten?</h2>
+      <p>Lade ein Video einmal hoch und veröffentliche es auf all deinen Kanälen – oder lass einen Workflow jeden neuen Post automatisch übernehmen.</p>
+      <div class="row"><a class="btn" href="#/create">${icons.upload}Hochladen &amp; crossposten</a><a class="btn" href="#/workflows/new">${icons.flow}Neuer Workflow</a></div>
     </section>
     <div class="stats">
-      <div class="stat"><span>Connected accounts</span><b>${accs.length}</b></div>
-      <div class="stat"><span>Active workflows</span><b>${wfs.filter((w) => w.active).length}</b></div>
-      <div class="stat"><span>Scheduled</span><b>${deliveries.filter((d) => d.status === 'scheduled' || d.status === 'draft').length}</b></div>
-      <div class="stat"><span>Published</span><b>${deliveries.filter((d) => d.status === 'published').length}</b></div>
+      <div class="stat"><span>Verbundene Konten</span><b>${accs.length}</b></div>
+      <div class="stat"><span>Aktive Workflows</span><b>${wfs.filter((w) => w.active).length}</b></div>
+      <div class="stat"><span>Geplant</span><b>${deliveries.filter((d) => d.status === 'scheduled' || d.status === 'draft').length}</b></div>
+      <div class="stat"><span>Veröffentlicht</span><b>${deliveries.filter((d) => d.status === 'published').length}</b></div>
     </div>
     <div class="grid-2">
       <section class="card">
-        <div class="section-head"><h2>Recent posts</h2><a href="#/posts" class="btn small ghost">View all</a></div>
-        ${posts.length ? posts.slice(0, 5).map((p) => postRow(p, false)).join('') : `<div class="empty"><b>No posts yet</b>Create your first post and send it to every platform at once.<br><a class="btn primary" href="#/create">Create post</a></div>`}
+        <div class="section-head"><h2>Neueste Posts</h2><a href="#/posts" class="btn small ghost">Alle ansehen</a></div>
+        ${posts.length ? posts.slice(0, 5).map((p) => postRow(p, false)).join('') : `<div class="empty"><b>Noch keine Posts</b>Erstelle deinen ersten Post und schick ihn auf einen Schlag an alle Plattformen.<br><a class="btn primary" href="#/create">Post erstellen</a></div>`}
       </section>
       <section class="card">
-        <h2>Getting started</h2>
-        <p class="sub">${steps.filter((s) => s.done).length} of ${steps.length} done${hasDest ? '' : ' · connect where you publish'}</p>
-        <ul class="steps">${steps.map((s, i) => `<li class="${s.done ? 'done' : ''}"><span class="tick">${s.done ? icons.check : i + 1}</span><span class="grow"><b>${s.title}</b><small>${s.text}</small></span>${s.done ? '' : `<a class="btn small" href="${s.href}">Start</a>`}</li>`).join('')}</ul>
+        <h2>Erste Schritte</h2>
+        <p class="sub">${steps.filter((s) => s.done).length} von ${steps.length} erledigt${hasDest ? '' : ' · verbinde, wo du veröffentlichst'}</p>
+        <ul class="steps">${steps.map((s, i) => `<li class="${s.done ? 'done' : ''}"><span class="tick">${s.done ? icons.check : i + 1}</span><span class="grow"><b>${s.title}</b><small>${s.text}</small></span>${s.done ? '' : `<a class="btn small" href="${s.href}">Los</a>`}</li>`).join('')}</ul>
       </section>
     </div>`, '#/');
 }
@@ -296,7 +297,7 @@ async function openInboxVideo(id: string, code: string | null) {
     history.replaceState(null, '', `#/create?inbox=${encodeURIComponent(id)}`);
     await syncNow();
     const item = (await refreshInbox()).find((x) => x.id === id);
-    if (!item) { toast('This video is no longer in your inbox'); location.hash = '#/inbox'; return; }
+    if (!item) { toast('Dieses Video ist nicht mehr in deinem Eingang'); location.hash = '#/inbox'; return; }
     draft = inboxDraft(item);
     makeThumb({ type: item.type }, item.url).then((t) => { if (draft?.inbox?.id === id && t) { draft.thumb = t; render(); } });
   } catch (e) {
@@ -326,32 +327,32 @@ function viewCreate(params: URLSearchParams) {
   const dests = store.accounts().filter((a) => platform(a.platform).destination);
   const ig = liveInstagram();
   const media = d.mediaName
-    ? `<div class="media-chosen"><div class="thumb">${d.thumb ? `<img src="${esc(d.thumb)}" alt="">` : icons.play}</div><div class="post-main"><b>${esc(d.mediaName)}</b><small>${d.ig ? `From Instagram${d.ig.permalink ? ` · <a href="${esc(d.ig.permalink)}" target="_blank" rel="noopener">open</a>` : ''}` : d.inbox ? `From your inbox · ${fmtSize(d.mediaSize)}` : `${esc(d.mediaType || 'file')} · ${fmtSize(d.mediaSize)}`}</small></div><button class="btn small" data-action="${d.ig ? 'pick-ig' : 'pick-media'}">Replace</button><button class="icon-btn" data-action="clear-media" aria-label="Remove">${icons.trash}</button></div>`
-    : inboxLoading ? `<div class="drop">${icons.upload}<b>Loading the video from your inbox…</b></div>`
-    : `<label class="drop" id="drop">${icons.upload}<b>Drop a video or picture here</b><span>or click to choose a file · MP4, MOV, JPG, PNG</span></label>${ig ? `<button class="btn small" data-action="pick-ig" style="margin-top:10px">${badge('instagram', 18)}Use a video already on Instagram</button>` : ''}`;
-  return shell(editId ? 'Edit post' : 'Create post', `
+    ? `<div class="media-chosen"><div class="thumb">${d.thumb ? `<img src="${esc(d.thumb)}" alt="">` : icons.play}</div><div class="post-main"><b>${esc(d.mediaName)}</b><small>${d.ig ? `Von Instagram${d.ig.permalink ? ` · <a href="${esc(d.ig.permalink)}" target="_blank" rel="noopener">öffnen</a>` : ''}` : d.inbox ? `Aus deinem Eingang · ${fmtSize(d.mediaSize)}` : `${esc(d.mediaType || 'Datei')} · ${fmtSize(d.mediaSize)}`}</small></div><button class="btn small" data-action="${d.ig ? 'pick-ig' : 'pick-media'}">Ersetzen</button><button class="icon-btn" data-action="clear-media" aria-label="Entfernen">${icons.trash}</button></div>`
+    : inboxLoading ? `<div class="drop">${icons.upload}<b>Video wird aus deinem Eingang geladen…</b></div>`
+    : `<label class="drop" id="drop">${icons.upload}<b>Video oder Bild hierher ziehen</b><span>oder klicken und Datei auswählen · MP4, MOV, JPG, PNG</span></label>${ig ? `<button class="btn small" data-action="pick-ig" style="margin-top:10px">${badge('instagram', 18)}Video von Instagram übernehmen</button>` : ''}`;
+  return shell(editId ? 'Post bearbeiten' : 'Post erstellen', `
     <div class="composer">
       <div class="stack">
         <section class="card stack">
-          <div><span class="field-label">Media</span>${media}<input type="file" id="media-input" accept="video/*,image/*" hidden></div>
-          <div><label class="field-label" for="c-title">Title</label><input class="input" id="c-title" maxlength="100" placeholder="Used as the YouTube title and in your content list" value="${esc(d.title)}"></div>
-          <div><label class="field-label" for="c-caption">Caption</label><textarea class="textarea" id="c-caption" placeholder="Write one caption for every platform. You can change it per account below.">${esc(d.caption)}</textarea><div class="counter" id="c-count">${d.caption.length} characters</div></div>
+          <div><span class="field-label">Medien</span>${media}<input type="file" id="media-input" accept="video/*,image/*" hidden></div>
+          <div><label class="field-label" for="c-title">Titel</label><input class="input" id="c-title" maxlength="100" placeholder="Wird als YouTube-Titel und in deiner Inhaltsliste verwendet" value="${esc(d.title)}"></div>
+          <div><label class="field-label" for="c-caption">Beschreibung</label><textarea class="textarea" id="c-caption" placeholder="Schreib eine Beschreibung für alle Plattformen. Unten kannst du sie pro Konto anpassen.">${esc(d.caption)}</textarea><div class="counter" id="c-count">${d.caption.length} Zeichen</div></div>
         </section>
         <section class="card">
-          <div class="section-head"><div><h2>Publish to</h2><p class="sub" style="margin:0">${d.selected.size} of ${dests.length} accounts selected</p></div><a class="btn small" href="#/accounts">${icons.plus}Connect account</a></div>
-          ${dests.length ? `<div class="dest-list">${dests.map((a) => destRow(a, d)).join('')}</div>` : `<div class="empty"><b>No destinations connected</b>Connect TikTok, Instagram, YouTube and more to publish there.<br><a class="btn primary" href="#/accounts">Connect accounts</a></div>`}
+          <div class="section-head"><div><h2>Veröffentlichen auf</h2><p class="sub" style="margin:0">${d.selected.size} von ${accountsText(dests.length)} ausgewählt</p></div><a class="btn small" href="#/accounts">${icons.plus}Konto verbinden</a></div>
+          ${dests.length ? `<div class="dest-list">${dests.map((a) => destRow(a, d)).join('')}</div>` : `<div class="empty"><b>Keine Ziele verbunden</b>Verbinde TikTok, Instagram, YouTube und mehr, um dort zu veröffentlichen.<br><a class="btn primary" href="#/accounts">Konten verbinden</a></div>`}
         </section>
         ${youtubeCard(d)}${instagramCard(d)}${tiktokCard(d)}
         <section class="card">
-          <h2>When</h2>
-          <p class="sub">Times are in ${esc(store.currentUser()!.timezone)}.</p>
-          <div class="row"><div class="seg"><button data-action="when" data-v="now" class="${d.when === 'now' ? 'active' : ''}">Publish now</button><button data-action="when" data-v="later" class="${d.when === 'later' ? 'active' : ''}">Schedule</button></div>
+          <h2>Wann</h2>
+          <p class="sub">Alle Zeiten in der Zeitzone ${esc(store.currentUser()!.timezone)}.</p>
+          <div class="row"><div class="seg"><button data-action="when" data-v="now" class="${d.when === 'now' ? 'active' : ''}">Jetzt veröffentlichen</button><button data-action="when" data-v="later" class="${d.when === 'later' ? 'active' : ''}">Planen</button></div>
           ${d.when === 'later' ? `<input type="datetime-local" class="input" id="c-at" style="max-width:240px" value="${toLocalInput(d.at)}">` : ''}</div>
-          <div class="row" style="margin-top:20px;justify-content:flex-end"><button class="btn" data-action="save-draft">Save as draft</button><button class="btn primary" data-action="publish" ${d.selected.size ? '' : 'disabled'}>${d.when === 'now' ? 'Publish now' : 'Schedule post'}</button></div>
+          <div class="row" style="margin-top:20px;justify-content:flex-end"><button class="btn" data-action="save-draft">Als Entwurf speichern</button><button class="btn primary" data-action="publish" ${d.selected.size ? '' : 'disabled'}>${d.when === 'now' ? 'Jetzt veröffentlichen' : 'Post planen'}</button></div>
         </section>
       </div>
-      <aside class="card sticky"><h2>Preview</h2><p class="sub">How it looks in a vertical feed.</p>
-        <div class="phone">${d.mediaUrl && d.mediaType.startsWith('video') ? `<video src="${d.mediaUrl}" muted loop autoplay playsinline></video>` : d.mediaUrl || d.thumb ? `<img src="${d.mediaUrl ?? d.thumb}" alt="">` : `<div class="ph-empty">Your video appears here</div>`}<div class="ph-cap" id="ph-cap">${esc(d.caption)}</div></div>
+      <aside class="card sticky"><h2>Vorschau</h2><p class="sub">So sieht es in einem Hochkant-Feed aus.</p>
+        <div class="phone">${d.mediaUrl && d.mediaType.startsWith('video') ? `<video src="${d.mediaUrl}" muted loop autoplay playsinline></video>` : d.mediaUrl || d.thumb ? `<img src="${d.mediaUrl ?? d.thumb}" alt="">` : `<div class="ph-empty">Hier erscheint dein Video</div>`}<div class="ph-cap" id="ph-cap">${esc(d.caption)}</div></div>
       </aside>
     </div>`, '#/create');
 }
@@ -365,15 +366,15 @@ function youtubeCard(d: Draft) {
   const opt = (v: string, label: string) => `<option value="${v}" ${o.privacy === v ? 'selected' : ''}>${label}</option>`;
   const cat = (v: string, label: string) => `<option value="${v}" ${o.categoryId === v ? 'selected' : ''}>${label}</option>`;
   return `<section class="card stack" id="yt-card">
-    <div><h2>${badge('youtube', 22)} YouTube</h2><p class="sub" style="margin:0">The title above becomes the video title (max. 100 characters), the caption its description.</p></div>
+    <div><h2>${badge('youtube', 22)} YouTube</h2><p class="sub" style="margin:0">Der Titel oben wird zum Videotitel (max. 100 Zeichen), die Beschreibung zur Videobeschreibung.</p></div>
     <div class="form-grid">
-      <div><label class="field-label" for="yt-privacy">Visibility</label><select class="select" id="yt-privacy">${opt('public', 'Public')}${opt('unlisted', 'Unlisted')}${opt('private', 'Private')}</select></div>
-      <div><label class="field-label" for="yt-category">Category</label><select class="select" id="yt-category">${cat('22', 'People &amp; Blogs')}${cat('24', 'Entertainment')}${cat('26', 'Howto &amp; Style')}${cat('27', 'Education')}${cat('28', 'Science &amp; Technology')}${cat('10', 'Music')}${cat('17', 'Sports')}${cat('20', 'Gaming')}${cat('19', 'Travel &amp; Events')}${cat('15', 'Pets &amp; Animals')}${cat('23', 'Comedy')}${cat('25', 'News &amp; Politics')}</select></div>
+      <div><label class="field-label" for="yt-privacy">Sichtbarkeit</label><select class="select" id="yt-privacy">${opt('public', 'Öffentlich')}${opt('unlisted', 'Nicht gelistet')}${opt('private', 'Privat')}</select></div>
+      <div><label class="field-label" for="yt-category">Kategorie</label><select class="select" id="yt-category">${cat('22', 'Menschen &amp; Blogs')}${cat('24', 'Unterhaltung')}${cat('26', 'Praktische Tipps &amp; Styling')}${cat('27', 'Bildung')}${cat('28', 'Wissenschaft &amp; Technik')}${cat('10', 'Musik')}${cat('17', 'Sport')}${cat('20', 'Gaming')}${cat('19', 'Reisen &amp; Events')}${cat('15', 'Tiere')}${cat('23', 'Comedy')}${cat('25', 'Nachrichten &amp; Politik')}</select></div>
     </div>
-    <div><label class="field-label" for="yt-tags">Tags</label><input class="input" id="yt-tags" placeholder="reels, tutorial, behind the scenes" value="${esc(o.tags)}"><div class="hint">Separated by commas, 500 characters in total.</div></div>
-    <label class="check-row"><input type="checkbox" id="yt-short" ${o.short ? 'checked' : ''}><span><b>Publish as Short</b><small>Adds #Shorts to the title. Vertical videos up to 3 minutes appear in the Shorts feed.</small></span></label>
-    <label class="check-row"><input type="checkbox" id="yt-kids" ${o.madeForKids ? 'checked' : ''}><span><b>Made for kids</b><small>YouTube requires this answer by law (COPPA). Comments and some features are turned off for kids' videos.</small></span></label>
-    ${live && !integrations().serverUrl ? `<label class="check-row"><input type="checkbox" id="yt-schedule" ${o.platformSchedule ? 'checked' : ''}><span><b>Let YouTube publish scheduled posts</b><small>Uploads right away as private and YouTube makes it public at the planned time, even if this app is closed. Needs at least 15 minutes ahead and visibility “Public”.</small></span></label>` : ''}
+    <div><label class="field-label" for="yt-tags">Tags</label><input class="input" id="yt-tags" placeholder="reels, tutorial, hinter den kulissen" value="${esc(o.tags)}"><div class="hint">Mit Kommas getrennt, insgesamt höchstens 500 Zeichen.</div></div>
+    <label class="check-row"><input type="checkbox" id="yt-short" ${o.short ? 'checked' : ''}><span><b>Als Short veröffentlichen</b><small>Hängt #Shorts an den Titel an. Hochkant-Videos bis 3 Minuten erscheinen im Shorts-Feed.</small></span></label>
+    <label class="check-row"><input type="checkbox" id="yt-kids" ${o.madeForKids ? 'checked' : ''}><span><b>Speziell für Kinder</b><small>YouTube verlangt diese Angabe gesetzlich (COPPA). Bei Videos für Kinder sind Kommentare und einige Funktionen abgeschaltet.</small></span></label>
+    ${live && !integrations().serverUrl ? `<label class="check-row"><input type="checkbox" id="yt-schedule" ${o.platformSchedule ? 'checked' : ''}><span><b>Geplante Posts von YouTube veröffentlichen lassen</b><small>Das Video wird sofort privat hochgeladen und YouTube schaltet es zur geplanten Zeit öffentlich – auch wenn diese App geschlossen ist. Braucht mindestens 15 Minuten Vorlauf und die Sichtbarkeit „Öffentlich“.</small></span></label>` : ''}
   </section>`;
 }
 
@@ -382,9 +383,9 @@ function instagramCard(d: Draft) {
   if (![...d.selected].some((id) => { const a = store.account(id); return a?.platform === 'instagram' && store.isLive(a); })) return '';
   const t = d.insta.trial;
   return `<section class="card stack" id="ig-card">
-    <div><h2>${badge('instagram', 22)} Instagram</h2><p class="sub" style="margin:0">Posted as a Reel.</p></div>
-    <label class="check-row"><input type="checkbox" id="ig-trial" ${t ? 'checked' : ''}><span><b>Share as trial reel (Test-Reel)</b><small>Instagram first shows it to people who don't follow you. Good for trying an idea before your followers see it.</small></span></label>
-    ${t ? `<div><label class="field-label" for="ig-grad">Share it with your followers</label><select class="select" id="ig-grad"><option value="MANUAL" ${t === 'MANUAL' ? 'selected' : ''}>Myself, later in the Instagram app</option><option value="SS_PERFORMANCE" ${t === 'SS_PERFORMANCE' ? 'selected' : ''}>Automatically, when it performs well</option></select></div>` : ''}
+    <div><h2>${badge('instagram', 22)} Instagram</h2><p class="sub" style="margin:0">Wird als Reel gepostet.</p></div>
+    <label class="check-row"><input type="checkbox" id="ig-trial" ${t ? 'checked' : ''}><span><b>Als Test-Reel teilen</b><small>Instagram zeigt es zuerst Leuten, die dir nicht folgen. Gut, um eine Idee auszuprobieren, bevor deine Follower sie sehen.</small></span></label>
+    ${t ? `<div><label class="field-label" for="ig-grad">Mit deinen Followern teilen</label><select class="select" id="ig-grad"><option value="MANUAL" ${t === 'MANUAL' ? 'selected' : ''}>Selbst, später in der Instagram-App</option><option value="SS_PERFORMANCE" ${t === 'SS_PERFORMANCE' ? 'selected' : ''}>Automatisch, wenn es gut ankommt</option></select></div>` : ''}
   </section>`;
 }
 
@@ -394,8 +395,8 @@ function tiktokCard(d: Draft) {
   const radio = (v: TikTokOptions['mode'], title: string, text: string) => `<label class="check-row"><input type="radio" name="tt-mode" value="${v}" ${d.tt.mode === v ? 'checked' : ''}><span><b>${title}</b><small>${text}</small></span></label>`;
   return `<section class="card stack" id="tt-card">
     <div><h2>${badge('tiktok', 22)} TikTok</h2></div>
-    ${radio('inbox', 'Send to the TikTok app as a draft', 'The video waits in your TikTok inbox; add sound and text there and post it yourself.')}
-    ${radio('direct', 'Post directly', 'Until TikTok has reviewed this app, direct posts are only visible to you and your account has to be private.')}
+    ${radio('inbox', 'Als Entwurf an die TikTok-App senden', 'Das Video wartet in deinem TikTok-Posteingang. Füge dort Sound und Text hinzu und poste es selbst.')}
+    ${radio('direct', 'Direkt posten', 'Solange TikTok diese App noch nicht geprüft hat, sind direkte Posts nur für dich sichtbar und dein Konto muss privat sein.')}
   </section>`;
 }
 
@@ -403,22 +404,22 @@ const liveInstagram = () => (integrations().serverUrl ? store.accounts().find((a
 
 function instagramPicker() {
   const acc = liveInstagram();
-  if (!acc) { toast('Connect Instagram first'); return; }
-  modal(`<h3>${badge('instagram', 26)}Videos on @${esc(acc.handle)}</h3><p>Newest first. Instagram doesn't release videos with licensed music for download – upload the original file for those.</p><div class="ig-grid" id="ig-grid"><p class="hint">Loading…</p></div><div class="row"><button class="btn" data-more hidden>Load more</button><button class="btn" data-x>Close</button></div>`, (el, close) => {
+  if (!acc) { toast('Verbinde zuerst Instagram'); return; }
+  modal(`<h3>${badge('instagram', 26)}Videos auf @${esc(acc.handle)}</h3><p>Neueste zuerst. Videos mit lizenzierter Musik gibt Instagram nicht zum Herunterladen frei – lade dafür die Originaldatei hoch.</p><div class="ig-grid" id="ig-grid"><p class="hint">Wird geladen…</p></div><div class="row"><button class="btn" data-more hidden>Mehr laden</button><button class="btn" data-x>Schließen</button></div>`, (el, close) => {
     el.classList.add('wide');
     const grid = el.querySelector<HTMLElement>('#ig-grid')!;
     const more = el.querySelector<HTMLButtonElement>('[data-more]')!;
     let list: InstagramVideo[] = [];
     let next: string | null = null;
-    const day = (t: number | null) => (t ? new Date(t).toLocaleDateString(undefined, { day: '2-digit', month: 'short', year: 'numeric' }) : '');
-    const tile = (v: InstagramVideo) => `<button type="button" class="ig-tile" data-ig="${esc(v.id)}" ${v.downloadable ? '' : 'disabled'} title="${esc(v.caption.slice(0, 200))}">${v.thumbnail_url ? `<img src="${esc(v.thumbnail_url)}" alt="" loading="lazy">` : ''}<span class="ig-meta">${day(v.timestamp)}${v.crossposted ? '<br>Cross-posted before' : ''}${v.downloadable ? '' : '<br>Licensed music – no download'}</span></button>`;
+    const day = (t: number | null) => (t ? new Date(t).toLocaleDateString('de-DE', { day: '2-digit', month: 'short', year: 'numeric' }) : '');
+    const tile = (v: InstagramVideo) => `<button type="button" class="ig-tile" data-ig="${esc(v.id)}" ${v.downloadable ? '' : 'disabled'} title="${esc(v.caption.slice(0, 200))}">${v.thumbnail_url ? `<img src="${esc(v.thumbnail_url)}" alt="" loading="lazy">` : ''}<span class="ig-meta">${day(v.timestamp)}${v.crossposted ? '<br>Schon weitergepostet' : ''}${v.downloadable ? '' : '<br>Lizenzierte Musik – kein Download'}</span></button>`;
     const load = async (after?: string) => {
       more.disabled = true;
       try {
         const r = await listInstagramVideos(acc.id, after);
         list = after ? [...list, ...r.videos] : r.videos;
         next = r.next;
-        grid.innerHTML = list.length ? list.map(tile).join('') : '<p class="hint">No videos on this account yet.</p>';
+        grid.innerHTML = list.length ? list.map(tile).join('') : '<p class="hint">Auf diesem Konto gibt es noch keine Videos.</p>';
         more.hidden = !next;
       } catch (e) {
         grid.innerHTML = `<p class="hint">${esc((e as Error).message)}</p>`;
@@ -442,7 +443,7 @@ function pickInstagram(acc: Account, v: InstagramVideo) {
   const d = draft!;
   syncDraftFromForm(d);
   if (d.mediaUrl) URL.revokeObjectURL(d.mediaUrl);
-  Object.assign(d, { file: undefined, mediaUrl: undefined, mediaName: 'Instagram video', mediaType: 'video/mp4', mediaSize: 0, thumb: v.thumbnail_url ?? undefined, ig: { accountId: acc.id, mediaId: v.id, permalink: v.permalink ?? undefined } });
+  Object.assign(d, { file: undefined, mediaUrl: undefined, mediaName: 'Instagram-Video', mediaType: 'video/mp4', mediaSize: 0, thumb: v.thumbnail_url ?? undefined, ig: { accountId: acc.id, mediaId: v.id, permalink: v.permalink ?? undefined } });
   if (!d.caption.trim()) d.caption = v.caption;
   if (!d.title.trim()) d.title = (v.caption.split('\n').map((x) => x.trim()).find(Boolean) ?? '').slice(0, 100);
   // It is already on this Instagram account.
@@ -459,8 +460,8 @@ function destRow(a: Account, d: Draft) {
     <label class="dest-top"><input type="checkbox" data-action="toggle-dest" data-id="${a.id}" ${on ? 'checked' : ''}>${badge(a.platform, 30)}<span class="name"><b>${p.name}</b><small>@${esc(a.handle)} · ${p.formats.join(', ')}</small></span>
     <span class="warn" data-warn="${a.id}">${over ? `${cap.length}/${p.limit}` : ''}</span></label>
     ${on ? `<div class="override">${d.open.has(a.id)
-      ? `<textarea class="textarea" data-override="${a.id}" placeholder="Caption for ${p.name}">${esc(cap)}</textarea><div class="hint">${p.hint}${p.limit ? ` Limit ${p.limit} characters.` : ''} <a href="#" data-action="reset-override" data-id="${a.id}">Use main caption</a></div>`
-      : `<a href="#" class="hint" data-action="open-override" data-id="${a.id}">Customize caption for ${p.name}</a>`}</div>` : ''}
+      ? `<textarea class="textarea" data-override="${a.id}" placeholder="Beschreibung für ${p.name}">${esc(cap)}</textarea><div class="hint">${p.hint}${p.limit ? ` Höchstens ${p.limit} Zeichen.` : ''} <a href="#" data-action="reset-override" data-id="${a.id}">Allgemeine Beschreibung verwenden</a></div>`
+      : `<a href="#" class="hint" data-action="open-override" data-id="${a.id}">Beschreibung für ${p.name} anpassen</a>`}</div>` : ''}
   </div>`;
 }
 
@@ -492,10 +493,10 @@ function syncDraftFromForm(d: Draft) {
 function savePostFromDraft(publish: boolean, force = false) {
   const d = draft!;
   syncDraftFromForm(d);
-  if (publish && !d.selected.size) { toast('Choose at least one account'); return; }
-  if (publish && !d.mediaName && !d.caption.trim()) { toast('Add a video or a caption first'); return; }
+  if (publish && !d.selected.size) { toast('Wähle mindestens ein Konto aus'); return; }
+  if (publish && !d.mediaName && !d.caption.trim()) { toast('Füge zuerst ein Video oder eine Beschreibung hinzu'); return; }
   const at = d.when === 'now' ? Date.now() : d.at;
-  if (publish && d.when === 'later' && at < Date.now()) { toast('Pick a time in the future'); return; }
+  if (publish && d.when === 'later' && at < Date.now()) { toast('Wähle eine Zeit in der Zukunft'); return; }
   if (publish && !force) {
     const probe: Post = { id: d.id, title: d.title, caption: d.caption, mediaName: d.mediaName, mediaType: d.mediaType, mediaSize: d.mediaSize, createdAt: 0, scheduledAt: at, deliveries: [] };
     const problems = [...d.selected]
@@ -503,7 +504,7 @@ function savePostFromDraft(publish: boolean, force = false) {
       .filter((x) => x.err);
     if (problems.length) {
       const list = problems.map((x) => `@${store.account(x.id)?.handle ?? '?'}: ${x.err}`).join(' · ');
-      confirmBox('Some accounts will fail', `${list}. Publish anyway? Those accounts will show as failed and you can retry after fixing the post.`, 'Publish anyway', () => savePostFromDraft(true, true));
+      confirmBox('Bei einigen Konten klappt es nicht', `${list}. Trotzdem veröffentlichen? Diese Konten werden als fehlgeschlagen angezeigt; du kannst es erneut versuchen, sobald du den Post korrigiert hast.`, 'Trotzdem veröffentlichen', () => savePostFromDraft(true, true));
       return;
     }
   }
@@ -511,19 +512,19 @@ function savePostFromDraft(publish: boolean, force = false) {
   // also while this page is closed, and for accounts connected on another device.
   const live = [...d.selected].filter((id) => store.isLive(store.account(id)));
   const viaServer = !!integrations().serverUrl && live.length > 0 && (!!d.ig || !!d.inbox || (publish && d.mediaType.startsWith('video')));
-  if ((d.ig || d.inbox) && !viaServer) { toast('Choose at least one account connected for real'); return; }
+  if ((d.ig || d.inbox) && !viaServer) { toast('Wähle mindestens ein live verbundenes Konto aus'); return; }
   if (viaServer) { submitViaServer(d, at, publish, live); return; }
   saveLocalPost(d, at, publish, [...d.selected]);
   draft = null;
   processQueue();
-  toast(publish ? (d.when === 'now' ? `Publishing to ${d.selected.size} accounts…` : `Scheduled for ${fmtDate(at)}`) : 'Draft saved');
+  toast(publish ? (d.when === 'now' ? `Wird auf ${accountsText(d.selected.size)} veröffentlicht…` : `Geplant für ${fmtDate(at)}`) : 'Entwurf gespeichert');
   location.hash = '#/posts';
 }
 
 function saveLocalPost(d: Draft, at: number, publish: boolean, ids: string[]) {
   const has = (p: string) => ids.some((id) => store.account(id)?.platform === p);
   const post: Post = {
-    id: d.id, title: d.title.trim() || d.mediaName || d.caption.slice(0, 40) || 'Untitled post', caption: d.caption,
+    id: d.id, title: d.title.trim() || d.mediaName || d.caption.slice(0, 40) || 'Post ohne Titel', caption: d.caption,
     mediaName: d.mediaName, mediaType: d.mediaType, mediaSize: d.mediaSize, thumb: d.thumb,
     mediaUrl: d.file ? undefined : store.posts().find((p) => p.id === d.id)?.mediaUrl,
     youtube: has('youtube') ? { ...d.yt } : undefined,
@@ -553,10 +554,10 @@ async function submitViaServer(d: Draft, at: number, publish: boolean, live: str
     if (d.ig) source = { type: 'instagram', account_id: d.ig.accountId, media_id: d.ig.mediaId, permalink: d.ig.permalink, thumbnail_url: d.thumb };
     else if (d.inbox) source = { type: 'inbox', id: d.inbox.id, thumbnail_url: d.thumb };
     else {
-      if (!d.file) throw new Error('Choose the video file again – it is no longer in this browser.');
+      if (!d.file) throw new Error('Wähle die Videodatei noch einmal aus – sie ist nicht mehr in diesem Browser.');
       const btn = buttons.find((b) => b.dataset.action === 'publish');
       const label = btn?.textContent ?? '';
-      const key = await uploadForLater(d.file, (pct) => { if (btn) btn.textContent = `Uploading ${pct}%`; }).finally(() => { if (btn) btn.textContent = label; });
+      const key = await uploadForLater(d.file, (pct) => { if (btn) btn.textContent = `Wird hochgeladen… ${pct}\u00a0%`; }).finally(() => { if (btn) btn.textContent = label; });
       source = { type: 'upload', key, thumbnail_url: d.thumb };
     }
     const planned = await planServerPost({
@@ -568,7 +569,7 @@ async function submitViaServer(d: Draft, at: number, publish: boolean, live: str
     const demo = [...d.selected].filter((id) => !live.includes(id));
     if (demo.length) { saveLocalPost({ ...d, id: store.uid() }, at, publish, demo); processQueue(); }
     draft = null;
-    toast(!publish ? 'Saved – approve it under Content when you are ready' : at <= Date.now() + 60_000 ? `Publishing to ${live.length} accounts…` : `Scheduled for ${fmtDate(at)} – the server publishes it, even with this page closed`);
+    toast(!publish ? 'Gespeichert – gib den Post unter „Inhalte“ frei, wenn du so weit bist' : at <= Date.now() + 60_000 ? `Wird auf ${accountsText(live.length)} veröffentlicht…` : `Geplant für ${fmtDate(at)} – der Server veröffentlicht den Post, auch wenn diese Seite geschlossen ist`);
     location.hash = '#/posts';
   } catch (e) {
     toast((e as Error).message);
@@ -622,25 +623,25 @@ async function setMedia(file: File) {
 // ---------- inbox: videos shared from the iPhone ----------
 function viewInbox() {
   const items = inboxItems();
-  return shell('Inbox', `
-    <p class="sub">Videos you share from your iPhone (e.g. from the Edits app) land here. Turn one into a post here or on any other device.${hasServerSession() ? '' : ' Connect Instagram first, so the server knows you.'}</p>
+  return shell('Eingang', `
+    <p class="sub">Hier landen Videos, die du vom iPhone teilst (z. B. aus der Edits-App). Mach daraus einen Post – hier oder auf jedem anderen Gerät.${hasServerSession() ? '' : ' Verbinde zuerst Instagram, damit der Server dich erkennt.'}</p>
     <section class="card">${items.length ? items.map((v) => `<div class="post-row">
-      <a class="thumb" href="#/create?inbox=${encodeURIComponent(v.id)}" aria-label="Create post">${icons.play}</a>
+      <a class="thumb" href="#/create?inbox=${encodeURIComponent(v.id)}" aria-label="Post erstellen">${icons.play}</a>
       <div class="post-main"><a class="post-link" href="#/create?inbox=${encodeURIComponent(v.id)}"><b>${esc(v.name)}</b></a><small>${fmtDate(v.created_at)} · ${fmtSize(v.size)}</small></div>
-      <div class="post-actions"><a class="btn small primary" href="#/create?inbox=${encodeURIComponent(v.id)}">Create post</a><button class="icon-btn" data-action="inbox-delete" data-id="${esc(v.id)}" aria-label="Delete">${icons.trash}</button></div>
-    </div>`).join('') : `<div class="empty"><b>Nothing here yet</b>Set up the iPhone Shortcut once under Settings, then share a video from Edits (or Photos) to “An Crosspost senden”.<br><a class="btn" href="#/settings">Set up the iPhone</a></div>`}</section>`, '#/inbox');
+      <div class="post-actions"><a class="btn small primary" href="#/create?inbox=${encodeURIComponent(v.id)}">Post erstellen</a><button class="icon-btn" data-action="inbox-delete" data-id="${esc(v.id)}" aria-label="Löschen">${icons.trash}</button></div>
+    </div>`).join('') : `<div class="empty"><b>Noch nichts da</b>Richte einmal unter „Einstellungen“ den iPhone-Kurzbefehl ein und teile dann ein Video aus Edits (oder Fotos) über „An Crosspost senden“.<br><a class="btn" href="#/settings">iPhone einrichten</a></div>`}</section>`, '#/inbox');
 }
 
 // ---------- one post, to look at again ----------
-const YT_PRIVACY: Record<string, string> = { public: 'Public', unlisted: 'Unlisted', private: 'Private' };
+const YT_PRIVACY: Record<string, string> = { public: 'Öffentlich', unlisted: 'Nicht gelistet', private: 'Privat' };
 
 function deliveryBlock(d: Delivery, p: Post) {
   const a = store.account(d.accountId);
   const label = d.status === 'published' && d.label ? d.label : STATUS_LABEL[d.status]!;
   return `<div class="detail-dest">
-    <div class="detail-dest-top">${a ? badge(a.platform, 28) : ''}<span class="grow"><b>${a ? platform(a.platform).name : 'Removed account'}</b><small>${a ? '@' + esc(a.handle) : ''}${d.at ? ` · ${fmtDate(d.at)}` : ''}</small></span><span class="chip ${d.status}">${esc(label)}</span>${d.url ? `<a class="btn small" href="${esc(d.url)}" target="_blank" rel="noopener">Open</a>` : ''}</div>
+    <div class="detail-dest-top">${a ? badge(a.platform, 28) : ''}<span class="grow"><b>${a ? platform(a.platform).name : 'Getrenntes Konto'}</b><small>${a ? '@' + esc(a.handle) : ''}${d.at ? ` · ${fmtDate(d.at)}` : ''}</small></span><span class="chip ${d.status}">${esc(label)}</span>${d.url ? `<a class="btn small" href="${esc(d.url)}" target="_blank" rel="noopener">Öffnen</a>` : ''}</div>
     ${d.error ? `<p class="detail-error">${esc(d.error)}</p>` : ''}
-    ${d.caption !== p.caption ? `<details><summary>Own caption for this account</summary><div class="detail-text">${esc(d.caption) || '<span class="hint">Empty</span>'}</div></details>` : ''}
+    ${d.caption !== p.caption ? `<details><summary>Eigene Beschreibung für dieses Konto</summary><div class="detail-text">${esc(d.caption) || '<span class="hint">Leer</span>'}</div></details>` : ''}
   </div>`;
 }
 
@@ -648,42 +649,42 @@ function postSettings(p: Post) {
   const rows: string[] = [];
   if (p.youtube) {
     const y = p.youtube;
-    rows.push(`<li>${badge('youtube', 20)}<span>${YT_PRIVACY[y.privacy] ?? y.privacy}${y.short ? ' · Short' : ''}${y.madeForKids ? ' · Made for kids' : ''}${y.tags ? ` · Tags: ${esc(y.tags)}` : ''}</span></li>`);
+    rows.push(`<li>${badge('youtube', 20)}<span>${YT_PRIVACY[y.privacy] ?? y.privacy}${y.short ? ' · Short' : ''}${y.madeForKids ? ' · Speziell für Kinder' : ''}${y.tags ? ` · Tags: ${esc(y.tags)}` : ''}</span></li>`);
   }
-  if (p.instagram?.trial) rows.push(`<li>${badge('instagram', 20)}<span>Trial reel · ${p.instagram.trial === 'MANUAL' ? 'you share it with followers in the app' : 'shared with followers when it performs well'}</span></li>`);
-  if (p.tiktok) rows.push(`<li>${badge('tiktok', 20)}<span>${p.tiktok.mode === 'inbox' ? 'Sent as a draft to the TikTok app' : 'Posted directly'}</span></li>`);
-  return rows.length ? `<section class="card"><h2>Settings</h2><ul class="detail-settings">${rows.join('')}</ul></section>` : '';
+  if (p.instagram?.trial) rows.push(`<li>${badge('instagram', 20)}<span>Test-Reel · ${p.instagram.trial === 'MANUAL' ? 'du teilst es selbst in der App mit deinen Followern' : 'wird mit deinen Followern geteilt, wenn es gut ankommt'}</span></li>`);
+  if (p.tiktok) rows.push(`<li>${badge('tiktok', 20)}<span>${p.tiktok.mode === 'inbox' ? 'Als Entwurf an die TikTok-App gesendet' : 'Direkt gepostet'}</span></li>`);
+  return rows.length ? `<section class="card"><h2>Einstellungen</h2><ul class="detail-settings">${rows.join('')}</ul></section>` : '';
 }
 
 function viewPost(params: URLSearchParams) {
   const p = store.allPosts().find((x) => x.id === params.get('id'));
-  if (!p) return shell('Post', `<section class="card"><div class="empty"><b>Post not found</b>It may have been deleted.<br><a class="btn" href="#/posts">Back to Content</a></div></section>`, '#/posts');
+  if (!p) return shell('Post', `<section class="card"><div class="empty"><b>Post nicht gefunden</b>Vielleicht wurde er gelöscht.<br><a class="btn" href="#/posts">Zurück zu den Inhalten</a></div></section>`, '#/posts');
   const status = postStatus(p);
   const origin = p.remote
-    ? (p.remote.kind === 'upload' ? 'Uploaded here, published by the server' : p.workflowId ? 'Picked up by a workflow from Instagram' : 'Cross-posted from Instagram')
-    : 'Published from this browser';
+    ? (p.remote.kind === 'upload' ? 'Hier hochgeladen, vom Server veröffentlicht' : p.workflowId ? 'Von einem Workflow aus Instagram übernommen' : 'Von Instagram weitergepostet')
+    : 'Aus diesem Browser veröffentlicht';
   return shell('Post', `
-    <div class="section-head"><a class="btn small" href="#/posts">${icons.chevronLeft}Content</a>
+    <div class="section-head"><a class="btn small" href="#/posts">${icons.chevronLeft}Inhalte</a>
       <div class="row">
-        <button class="btn small" data-action="post-again" data-id="${p.id}">Post again</button>
-        ${status === 'draft' ? `<button class="btn small primary" data-action="approve" data-id="${p.id}">Approve</button>` : ''}
-        ${p.deliveries.some((d) => d.status === 'failed') ? `<button class="btn small" data-action="retry" data-id="${p.id}">Retry</button>` : ''}
-        ${(status === 'draft' || status === 'scheduled') && !p.remote ? `<a class="btn small" href="#/create?edit=${p.id}">Edit</a>` : ''}
-        <button class="icon-btn" data-action="delete-post" data-id="${p.id}" aria-label="Delete">${icons.trash}</button>
+        <button class="btn small" data-action="post-again" data-id="${p.id}">Erneut posten</button>
+        ${status === 'draft' ? `<button class="btn small primary" data-action="approve" data-id="${p.id}">Freigeben</button>` : ''}
+        ${p.deliveries.some((d) => d.status === 'failed') ? `<button class="btn small" data-action="retry" data-id="${p.id}">Erneut versuchen</button>` : ''}
+        ${(status === 'draft' || status === 'scheduled') && !p.remote ? `<a class="btn small" href="#/create?edit=${p.id}">Bearbeiten</a>` : ''}
+        <button class="icon-btn" data-action="delete-post" data-id="${p.id}" aria-label="Löschen">${icons.trash}</button>
       </div>
     </div>
     <div class="post-detail">
       <section class="card detail-media" id="detail-media" data-id="${esc(p.id)}">
         ${p.thumb ? `<img src="${esc(p.thumb)}" alt="">` : `<div class="ph-empty">${icons.play}</div>`}
-        <p class="hint" id="detail-note">Looking for the video…</p>
+        <p class="hint" id="detail-note">Video wird gesucht…</p>
       </section>
       <div class="stack">
         <section class="card stack">
-          <div><div class="copy-row"><span class="field-label">Title</span><button class="btn small" data-action="copy" data-v="d-title">Copy</button></div><div class="detail-title" id="d-title">${esc(p.title)}</div></div>
-          <div><div class="copy-row"><span class="field-label">Description</span><button class="btn small" data-action="copy" data-v="d-caption">Copy</button></div><div class="detail-text" id="d-caption">${esc(p.caption)}</div></div>
-          <p class="sub" style="margin:0">${STATUS_LABEL[status]} · ${fmtDate(p.scheduledAt)} · ${origin}${p.remote?.permalink ? ` · <a href="${esc(p.remote.permalink)}" target="_blank" rel="noopener">Original on Instagram</a>` : ''}</p>
+          <div><div class="copy-row"><span class="field-label">Titel</span><button class="btn small" data-action="copy" data-v="d-title">Kopieren</button></div><div class="detail-title" id="d-title">${esc(p.title)}</div></div>
+          <div><div class="copy-row"><span class="field-label">Beschreibung</span><button class="btn small" data-action="copy" data-v="d-caption">Kopieren</button></div><div class="detail-text" id="d-caption">${esc(p.caption)}</div></div>
+          <p class="sub" style="margin:0">${STATUS_LABEL[status]} · ${fmtDate(p.scheduledAt)} · ${origin}${p.remote?.permalink ? ` · <a href="${esc(p.remote.permalink)}" target="_blank" rel="noopener">Original auf Instagram</a>` : ''}</p>
         </section>
-        <section class="card"><h2>Where it went</h2>${p.deliveries.map((d) => deliveryBlock(d, p)).join('') || '<p class="hint">No accounts.</p>'}</section>
+        <section class="card"><h2>Ziele</h2>${p.deliveries.map((d) => deliveryBlock(d, p)).join('') || '<p class="hint">Keine Konten.</p>'}</section>
         ${postSettings(p)}
       </div>
     </div>`, '#/posts');
@@ -718,7 +719,7 @@ async function mountPostMedia() {
   const note = box.querySelector('#detail-note');
   if (!note) return;
   const link = p?.remote?.permalink ?? p?.deliveries.find((d) => d.url)?.url;
-  note.innerHTML = `This browser has no copy of the video${p?.remote ? '' : ' (posted before videos were kept, or from another device)'}.${link ? ` <a href="${esc(link)}" target="_blank" rel="noopener">Watch it here</a>.` : ''}`;
+  note.innerHTML = `Dieser Browser hat keine Kopie des Videos${p?.remote ? '' : ' (gepostet, bevor Videos aufbewahrt wurden, oder von einem anderen Gerät)'}.${link ? ` <a href="${esc(link)}" target="_blank" rel="noopener">Hier ansehen</a>.` : ''}`;
 }
 
 /** A new post with the same video, text and accounts. */
@@ -738,7 +739,7 @@ async function draftFromPost(p: Post): Promise<Draft> {
   } else if (p.remote?.mediaId) {
     const accountId = p.remote.sourceAccountId ?? store.workflows().find((w) => w.id === p.workflowId)?.sourceId;
     if (accountId && store.account(accountId)) {
-      Object.assign(d, { ig: { accountId, mediaId: p.remote.mediaId, permalink: p.remote.permalink }, mediaName: 'Instagram video', mediaType: 'video/mp4', thumb: p.thumb });
+      Object.assign(d, { ig: { accountId, mediaId: p.remote.mediaId, permalink: p.remote.permalink }, mediaName: 'Instagram-Video', mediaType: 'video/mp4', thumb: p.thumb });
       d.selected.delete(accountId);
     }
   }
@@ -750,10 +751,10 @@ let postTab: (typeof POST_TABS)[number] = 'all';
 
 function viewPosts() {
   const list = store.allPosts().filter((p) => postTab === 'all' || postStatus(p) === postTab || (postTab === 'failed' && p.deliveries.some((d) => d.status === 'failed')));
-  const names = { all: 'All', scheduled: 'Scheduled', draft: 'Drafts & approvals', published: 'Published', failed: 'Failed' };
-  return shell('Content', `
+  const names = { all: 'Alle', scheduled: 'Geplant', draft: 'Entwürfe & Freigaben', published: 'Veröffentlicht', failed: 'Fehlgeschlagen' };
+  return shell('Inhalte', `
     <div class="section-head"><div class="tabs">${POST_TABS.map((t) => `<button data-action="tab" data-v="${t}" class="${postTab === t ? 'active' : ''}">${names[t]}</button>`).join('')}</div></div>
-    <section class="card">${list.length ? list.map((p) => postRow(p)).join('') : `<div class="empty"><b>Nothing here yet</b>Posts you create or workflows bring in show up here.<br><a class="btn primary" href="#/create">Create post</a></div>`}</section>`, '#/posts');
+    <section class="card">${list.length ? list.map((p) => postRow(p)).join('') : `<div class="empty"><b>Noch nichts da</b>Hier erscheinen Posts, die du erstellst oder die Workflows reinholen.<br><a class="btn primary" href="#/create">Post erstellen</a></div>`}</section>`, '#/posts');
 }
 
 let calMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
@@ -765,14 +766,14 @@ function viewCalendar() {
   const days: Date[] = Array.from({ length: 42 }, (_, i) => new Date(start.getFullYear(), start.getMonth(), start.getDate() + i));
   const today = new Date().toDateString();
   const posts = store.allPosts();
-  const label = first.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
-  return shell('Calendar', `
+  const label = first.toLocaleDateString('de-DE', { month: 'long', year: 'numeric' });
+  return shell('Kalender', `
     <section class="card">
-      <div class="section-head"><div class="cal-head"><button class="icon-btn" data-action="cal" data-v="-1" aria-label="Previous month">${icons.chevronLeft}</button><h2>${label}</h2><button class="icon-btn" data-action="cal" data-v="1" aria-label="Next month" style="transform:scaleX(-1)">${icons.chevronLeft}</button></div><button class="btn small" data-action="cal" data-v="0">Today</button></div>
-      <div class="cal">${['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((d) => `<div class="dow">${d}</div>`).join('')}
+      <div class="section-head"><div class="cal-head"><button class="icon-btn" data-action="cal" data-v="-1" aria-label="Vorheriger Monat">${icons.chevronLeft}</button><h2>${label}</h2><button class="icon-btn" data-action="cal" data-v="1" aria-label="Nächster Monat" style="transform:scaleX(-1)">${icons.chevronLeft}</button></div><button class="btn small" data-action="cal" data-v="0">Heute</button></div>
+      <div class="cal">${['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'].map((d) => `<div class="dow">${d}</div>`).join('')}
       ${days.map((day) => {
         const items = posts.filter((p) => new Date(p.scheduledAt).toDateString() === day.toDateString());
-        return `<div class="day ${day.getMonth() !== first.getMonth() ? 'out' : ''} ${day.toDateString() === today ? 'today' : ''}"><span class="num">${day.getDate()}</span>${items.map((p) => `<a class="ev ${postStatus(p)}" href="#/posts" title="${esc(p.title)}">${new Date(p.scheduledAt).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })} ${esc(p.title)}</a>`).join('')}</div>`;
+        return `<div class="day ${day.getMonth() !== first.getMonth() ? 'out' : ''} ${day.toDateString() === today ? 'today' : ''}"><span class="num">${day.getDate()}</span>${items.map((p) => `<a class="ev ${postStatus(p)}" href="#/posts" title="${esc(p.title)}">${new Date(p.scheduledAt).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })} ${esc(p.title)}</a>`).join('')}</div>`;
       }).join('')}</div>
     </section>`, '#/calendar');
 }
@@ -780,19 +781,19 @@ function viewCalendar() {
 function viewWorkflows() {
   const wfs = store.workflows();
   return shell('Workflows', `
-    <div class="section-head"><p class="sub" style="margin:0">A workflow watches one account and publishes everything new to the destinations you pick.</p><a class="btn primary" href="#/workflows/new">${icons.plus}New workflow</a></div>
+    <div class="section-head"><p class="sub" style="margin:0">Ein Workflow beobachtet ein Konto und veröffentlicht alles Neue auf den Zielen, die du auswählst.</p><a class="btn primary" href="#/workflows/new">${icons.plus}Neuer Workflow</a></div>
     ${wfs.length ? `<div class="wf-list">${wfs.map((w) => {
       const src = store.account(w.sourceId);
       const server = runsOnServer(w);
       const st = server ? serverWorkflowState(w.id) : undefined;
-      const runsText = server ? `Runs on the server${st?.last_checked ? ` · checked ${new Date(st.last_checked).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}` : ''}` : `${w.runs} runs (demo)`;
+      const runsText = server ? `Läuft auf dem Server${st?.last_checked ? ` · zuletzt geprüft ${new Date(st.last_checked).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}` : ''}` : `${w.runs} ${w.runs === 1 ? 'Durchlauf' : 'Durchläufe'} (Demo)`;
       return `<section class="card wf">
-        <label class="switch" title="${w.active ? 'Active' : 'Paused'}"><input type="checkbox" data-action="wf-toggle" data-id="${w.id}" ${w.active ? 'checked' : ''}><span></span></label>
-        <div class="wf-meta"><b>${esc(w.name)}</b><small>${w.active ? 'Active' : 'Paused'} · ${w.autoPublish ? 'Publishes automatically' : 'Waits for approval'} · ${runsText}</small>${st?.last_error ? `<small style="display:block;color:#c0263d">Last check failed: ${esc(st.last_error)}</small>` : ''}</div>
-        <div class="wf-route">${src ? badge(src.platform, 32) : '<span class="tag">No source</span>'}<span class="arrow">${icons.arrow}</span><span class="wf-dests">${w.destinationIds.map((id) => store.account(id)).filter(Boolean).map((a) => badge(a!.platform, 32)).join('') || '<span class="tag">No destinations</span>'}</span></div>
-        <div class="row"><button class="btn small" data-action="wf-run" data-id="${w.id}">${icons.play}Run now</button><a class="btn small" href="#/workflows/edit?id=${w.id}">Edit</a><button class="icon-btn" data-action="wf-delete" data-id="${w.id}" aria-label="Delete">${icons.trash}</button></div>
+        <label class="switch" title="${w.active ? 'Aktiv' : 'Pausiert'}"><input type="checkbox" data-action="wf-toggle" data-id="${w.id}" ${w.active ? 'checked' : ''}><span></span></label>
+        <div class="wf-meta"><b>${esc(w.name)}</b><small>${w.active ? 'Aktiv' : 'Pausiert'} · ${w.autoPublish ? 'Veröffentlicht automatisch' : 'Wartet auf Freigabe'} · ${runsText}</small>${st?.last_error ? `<small style="display:block;color:#c0263d">Letzte Prüfung fehlgeschlagen: ${esc(st.last_error)}</small>` : ''}</div>
+        <div class="wf-route">${src ? badge(src.platform, 32) : '<span class="tag">Keine Quelle</span>'}<span class="arrow">${icons.arrow}</span><span class="wf-dests">${w.destinationIds.map((id) => store.account(id)).filter(Boolean).map((a) => badge(a!.platform, 32)).join('') || '<span class="tag">Keine Ziele</span>'}</span></div>
+        <div class="row"><button class="btn small" data-action="wf-run" data-id="${w.id}">${icons.play}Jetzt ausführen</button><a class="btn small" href="#/workflows/edit?id=${w.id}">Bearbeiten</a><button class="icon-btn" data-action="wf-delete" data-id="${w.id}" aria-label="Löschen">${icons.trash}</button></div>
       </section>`;
-    }).join('')}</div>` : `<section class="card"><div class="empty"><b>No workflows yet</b>Connect a source like TikTok and send every new video to Instagram, YouTube Shorts, Facebook and more.<br><a class="btn primary" href="#/workflows/new">Create your first workflow</a></div></section>`}`, '#/workflows');
+    }).join('')}</div>` : `<section class="card"><div class="empty"><b>Noch keine Workflows</b>Verbinde eine Quelle wie TikTok und schick jedes neue Video an Instagram, YouTube Shorts, Facebook und mehr.<br><a class="btn primary" href="#/workflows/new">Ersten Workflow erstellen</a></div></section>`}`, '#/workflows');
 }
 
 function viewWorkflowEdit(params: URLSearchParams) {
@@ -801,25 +802,25 @@ function viewWorkflowEdit(params: URLSearchParams) {
   const sources = accs.filter((a) => platform(a.platform).source);
   const dests = accs.filter((a) => platform(a.platform).destination);
   const w: Workflow = existing ?? { id: store.uid(), name: '', sourceId: sources[0]?.id ?? '', destinationIds: [], active: true, autoPublish: true, captionTemplate: '{caption}', hashtags: '', removeWatermark: true, delayMinutes: 0, createdAt: Date.now(), runs: 0 };
-  return shell(existing ? 'Edit workflow' : 'New workflow', `
+  return shell(existing ? 'Workflow bearbeiten' : 'Neuer Workflow', `
     <form class="card stack" id="wf-form" data-id="${w.id}" data-new="${existing ? '' : '1'}">
-      <div><label class="field-label" for="wf-name">Workflow name</label><input class="input" id="wf-name" placeholder="e.g. TikTok to everywhere" value="${esc(w.name)}"></div>
-      <div><span class="field-label">1. Source: where new content comes from</span>
+      <div><label class="field-label" for="wf-name">Name des Workflows</label><input class="input" id="wf-name" placeholder="z. B. TikTok überallhin" value="${esc(w.name)}"></div>
+      <div><span class="field-label">1. Quelle: woher neue Inhalte kommen</span>
         ${sources.length ? `<div class="pick-grid">${sources.map((a) => `<label class="pick ${w.sourceId === a.id ? 'on' : ''}"><input type="radio" name="wf-src" value="${a.id}" ${w.sourceId === a.id ? 'checked' : ''}>${badge(a.platform, 28)}<span><b>${platform(a.platform).name}</b><small>@${esc(a.handle)}</small></span></label>`).join('')}</div>
-        <p class="hint">An Instagram account connected for real is checked on the server every 5 minutes, also while this page is closed: every new Reel or video goes to the destinations below. Other sources only run as a demo so far.</p>` : `<p class="hint">Connect a source first (TikTok, Instagram, YouTube, Facebook, Dropbox, Google Drive or a podcast). <a href="#/accounts">Connect accounts</a></p>`}
+        <p class="hint">Der Server prüft ein live verbundenes Instagram-Konto alle 5 Minuten – auch wenn diese Seite geschlossen ist. Jedes neue Reel oder Video geht an die Ziele unten. Andere Quellen laufen bisher nur als Demo.</p>` : `<p class="hint">Verbinde zuerst eine Quelle (TikTok, Instagram, YouTube, Facebook, Dropbox, Google Drive oder einen Podcast). <a href="#/accounts">Konten verbinden</a></p>`}
       </div>
-      <div><span class="field-label">2. Destinations: where it gets published</span>
-        ${dests.length ? `<div class="pick-grid">${dests.map((a) => `<label class="pick ${w.destinationIds.includes(a.id) ? 'on' : ''}"><input type="checkbox" name="wf-dest" value="${a.id}" ${w.destinationIds.includes(a.id) ? 'checked' : ''}>${badge(a.platform, 28)}<span><b>${platform(a.platform).name}</b><small>@${esc(a.handle)}</small></span></label>`).join('')}</div>` : `<p class="hint">No destinations connected yet. <a href="#/accounts">Connect accounts</a></p>`}
+      <div><span class="field-label">2. Ziele: wo veröffentlicht wird</span>
+        ${dests.length ? `<div class="pick-grid">${dests.map((a) => `<label class="pick ${w.destinationIds.includes(a.id) ? 'on' : ''}"><input type="checkbox" name="wf-dest" value="${a.id}" ${w.destinationIds.includes(a.id) ? 'checked' : ''}>${badge(a.platform, 28)}<span><b>${platform(a.platform).name}</b><small>@${esc(a.handle)}</small></span></label>`).join('')}</div>` : `<p class="hint">Noch keine Ziele verbunden. <a href="#/accounts">Konten verbinden</a></p>`}
       </div>
       <div class="form-grid">
-        <div><label class="field-label" for="wf-template">Caption template</label><textarea class="textarea" id="wf-template" style="min-height:90px">${esc(w.captionTemplate)}</textarea><div class="hint">{caption} is the original caption, {title} the original title.</div></div>
-        <div><label class="field-label" for="wf-tags">Add hashtags</label><input class="input" id="wf-tags" placeholder="#reels #shorts" value="${esc(w.hashtags)}">
-          <label class="field-label" for="wf-delay" style="margin-top:16px">Wait before publishing</label><select class="select" id="wf-delay">${[0, 15, 60, 180, 720, 1440].map((m) => `<option value="${m}" ${w.delayMinutes === m ? 'selected' : ''}>${m === 0 ? 'Publish right away' : m < 60 ? `${m} minutes` : `${m / 60} hours`}</option>`).join('')}</select></div>
+        <div><label class="field-label" for="wf-template">Vorlage für die Beschreibung</label><textarea class="textarea" id="wf-template" style="min-height:90px">${esc(w.captionTemplate)}</textarea><div class="hint">{caption} ist die ursprüngliche Beschreibung, {title} der ursprüngliche Titel.</div></div>
+        <div><label class="field-label" for="wf-tags">Hashtags hinzufügen</label><input class="input" id="wf-tags" placeholder="#reels #shorts" value="${esc(w.hashtags)}">
+          <label class="field-label" for="wf-delay" style="margin-top:16px">Wartezeit vor dem Veröffentlichen</label><select class="select" id="wf-delay">${[0, 15, 60, 180, 720, 1440].map((m) => `<option value="${m}" ${w.delayMinutes === m ? 'selected' : ''}>${m === 0 ? 'Sofort veröffentlichen' : m < 60 ? `${m} Minuten` : m === 60 ? '1 Stunde' : `${m / 60} Stunden`}</option>`).join('')}</select></div>
       </div>
-      <label class="check-row"><input type="checkbox" id="wf-auto" ${w.autoPublish ? 'checked' : ''}><span><b>Publish automatically</b><small>Off: new posts wait in Content until you approve them.</small></span></label>
-      <label class="check-row"><input type="checkbox" id="wf-wm" ${w.removeWatermark ? 'checked' : ''}><span><b>Use the video without watermark</b><small>Download the clean original from the source where the platform allows it.</small></span></label>
-      <label class="check-row"><input type="checkbox" id="wf-active" ${w.active ? 'checked' : ''}><span><b>Workflow is active</b><small>Paused workflows don't pick up new content.</small></span></label>
-      <div class="row" style="justify-content:flex-end"><a class="btn" href="#/workflows">Cancel</a><button class="btn primary" type="submit">${existing ? 'Save workflow' : 'Create workflow'}</button></div>
+      <label class="check-row"><input type="checkbox" id="wf-auto" ${w.autoPublish ? 'checked' : ''}><span><b>Automatisch veröffentlichen</b><small>Aus: Neue Posts warten unter „Inhalte“, bis du sie freigibst.</small></span></label>
+      <label class="check-row"><input type="checkbox" id="wf-wm" ${w.removeWatermark ? 'checked' : ''}><span><b>Video ohne Wasserzeichen verwenden</b><small>Lädt das saubere Original von der Quelle, wo die Plattform das erlaubt.</small></span></label>
+      <label class="check-row"><input type="checkbox" id="wf-active" ${w.active ? 'checked' : ''}><span><b>Workflow ist aktiv</b><small>Pausierte Workflows holen keine neuen Inhalte.</small></span></label>
+      <div class="row" style="justify-content:flex-end"><a class="btn" href="#/workflows">Abbrechen</a><button class="btn primary" type="submit">${existing ? 'Workflow speichern' : 'Workflow erstellen'}</button></div>
     </form>`, '#/workflows');
 }
 
@@ -829,34 +830,34 @@ function viewAccounts() {
     const p = platform(id);
     const linked = accs.filter((a) => a.platform === id);
     return `<section class="card acc">
-      <div class="acc-top">${badge(id, 40)}<div><b>${p.name}</b><span class="tagline">${p.source ? '<span class="tag">Source</span>' : ''}${p.destination ? '<span class="tag">Destination</span>' : ''}</span></div></div>
+      <div class="acc-top">${badge(id, 40)}<div><b>${p.name}</b><span class="tagline">${p.source ? '<span class="tag">Quelle</span>' : ''}${p.destination ? '<span class="tag">Ziel</span>' : ''}</span></div></div>
       <div class="acc-hint">${p.hint}${isOAuth(id) ? (isConfigured(id) ? ' <span class="tag live">Echte Anmeldung</span>' : ' <span class="tag">Demo – noch nicht eingerichtet</span>') : ''}</div>
-      ${linked.length ? `<div class="acc-linked">${linked.map((a) => `<div class="linked ${store.isLive(a) ? '' : 'demo'}">${icons.check.replace('<svg', '<svg width="14" height="14"')}<span>@${esc(a.handle)}</span><small class="conn-kind" title="${a.cloud && !a.auth ? 'Connected on another device; posts go through the server' : ''}">${a.auth ? (a.auth.expiresAt && a.auth.expiresAt < Date.now() && !a.auth.refreshToken && !a.cloud ? 'expired' : 'Live') : a.cloud ? 'Live' : 'Demo'}</small>${store.isLive(a) && isOAuth(a.platform) && isConfigured(a.platform) ? `<button class="btn small" data-action="connect" data-v="${a.platform}" title="Sign in again, e.g. to grant new permissions">Reconnect</button>` : ''}<button class="icon-btn" data-action="disconnect" data-id="${a.id}" aria-label="Disconnect" title="Disconnect">${icons.close}</button></div>`).join('')}</div>` : ''}
-      <button class="btn small ${linked.length ? '' : 'primary'}" data-action="connect" data-v="${id}">${linked.length ? 'Add another' : 'Connect'}</button>
+      ${linked.length ? `<div class="acc-linked">${linked.map((a) => `<div class="linked ${store.isLive(a) ? '' : 'demo'}">${icons.check.replace('<svg', '<svg width="14" height="14"')}<span>@${esc(a.handle)}</span><small class="conn-kind" title="${a.cloud && !a.auth ? 'Auf einem anderen Gerät verbunden; Posts laufen über den Server' : ''}">${a.auth ? (a.auth.expiresAt && a.auth.expiresAt < Date.now() && !a.auth.refreshToken && !a.cloud ? 'abgelaufen' : 'Live') : a.cloud ? 'Live' : 'Demo'}</small>${store.isLive(a) && isOAuth(a.platform) && isConfigured(a.platform) ? `<button class="btn small" data-action="connect" data-v="${a.platform}" title="Neu anmelden, z. B. um neue Berechtigungen zu erteilen">Neu verbinden</button>` : ''}<button class="icon-btn" data-action="disconnect" data-id="${a.id}" aria-label="Trennen" title="Trennen">${icons.close}</button></div>`).join('')}</div>` : ''}
+      <button class="btn small ${linked.length ? '' : 'primary'}" data-action="connect" data-v="${id}">${linked.length ? 'Weiteres Konto' : 'Verbinden'}</button>
     </section>`;
   };
-  return shell('Connected accounts', `
-    <p class="sub">Connect the accounts you post from and the ones you publish to. You can connect several accounts per platform. Facebook, Instagram, TikTok, YouTube and Snapchat use each platform's own sign-in once they are set up under <a href="#/settings">Settings → Integrations</a>.</p>
+  return shell('Verbundene Konten', `
+    <p class="sub">Verbinde die Konten, von denen du postest, und die, auf denen du veröffentlichst. Pro Plattform kannst du mehrere Konten verbinden. Facebook, Instagram, TikTok, YouTube und Snapchat nutzen die Anmeldung der jeweiligen Plattform, sobald sie unter <a href="#/settings">Einstellungen → Integrationen</a> eingerichtet sind.</p>
     <div class="acc-grid">${PLATFORMS.map((p) => card(p.id)).join('')}</div>`, '#/accounts');
 }
 
 // `platform`: whose readiness tag the field shows.
 const INTEGRATION_FIELDS: { key: keyof Integrations; platform?: OAuthPlatform; label: string; hint: string }[] = [
-  { key: 'serverUrl', label: 'Server address', hint: 'Address of your deployed server (server/worker.js), e.g. https://crosspost-api.<name>.workers.dev. Needed for Facebook, Instagram and TikTok.' },
-  { key: 'facebook', platform: 'facebook', label: 'Meta App ID', hint: 'Meta for Developers → your app → App settings → Basic. Used for Facebook and Instagram.' },
-  { key: 'metaConfigId', platform: 'instagram', label: 'Instagram configuration ID', hint: 'Meta for Developers → your app → Facebook Login for Business → Configurations → “Instagram API (Unified Login)”.' },
-  { key: 'tiktok', platform: 'tiktok', label: 'TikTok Client key', hint: 'TikTok for Developers → your app → App details.' },
-  { key: 'youtube', platform: 'youtube', label: 'Google OAuth Client ID', hint: 'Google Cloud console → APIs & Services → Credentials (type: Web application). Works on its own for 1 hour per sign-in; with GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET on your server, YouTube access stays connected.' },
-  { key: 'snapchat', platform: 'snapchat', label: 'Snapchat Public OAuth Client ID', hint: 'Snap Developer Portal → your app → OAuth client ID (public).' },
+  { key: 'serverUrl', label: 'Serveradresse', hint: 'Adresse deines eingerichteten Servers (server/worker.js), z. B. https://crosspost-api.&lt;name&gt;.workers.dev. Nötig für Facebook, Instagram und TikTok.' },
+  { key: 'facebook', platform: 'facebook', label: 'Meta-App-ID', hint: 'Meta for Developers → deine App → App settings → Basic. Wird für Facebook und Instagram verwendet.' },
+  { key: 'metaConfigId', platform: 'instagram', label: 'Instagram-Konfigurations-ID', hint: 'Meta for Developers → deine App → Facebook Login for Business → Configurations → „Instagram API (Unified Login)“.' },
+  { key: 'tiktok', platform: 'tiktok', label: 'TikTok-Client-Key', hint: 'TikTok for Developers → deine App → App details.' },
+  { key: 'youtube', platform: 'youtube', label: 'Google-OAuth-Client-ID', hint: 'Google Cloud Console → APIs & Services → Credentials (Typ: Web application). Ohne Server gilt der Zugang nur 1 Stunde pro Anmeldung; mit GOOGLE_CLIENT_ID und GOOGLE_CLIENT_SECRET auf deinem Server bleibt YouTube dauerhaft verbunden.' },
+  { key: 'snapchat', platform: 'snapchat', label: 'Öffentliche Snapchat-OAuth-Client-ID', hint: 'Snap Developer Portal → deine App → OAuth client ID (public).' },
 ];
 
 function integrationsCard() {
   const c = integrations();
   return `<form class="card stack" id="integrations-form" style="margin-top:20px">
-    <div><h2>Integrations</h2><p class="sub" style="margin:0">Real sign-in for Facebook, Instagram, TikTok, YouTube and Snapchat. Client IDs are public; secrets belong only on the server. Values set while building the site are filled in already.</p></div>
-    <div><span class="field-label">Redirect URI</span><input class="input" readonly value="${esc(redirectUri())}" onclick="this.select()"><div class="hint">Enter exactly this address as the allowed redirect / callback URL in every platform's developer settings.</div></div>
-    <div class="form-grid">${INTEGRATION_FIELDS.map((f) => `<div><label class="field-label" for="int-${f.key}">${f.label}${f.platform ? (isConfigured(f.platform) ? ' <span class="tag live">ready</span>' : ' <span class="tag">not set</span>') : ''}</label><input class="input" id="int-${f.key}" data-int="${f.key}" value="${esc(c[f.key])}" autocomplete="off" spellcheck="false"><div class="hint">${f.hint}</div></div>`).join('')}</div>
-    <div class="row" style="justify-content:flex-end"><button class="btn primary" type="submit">Save integrations</button></div>
+    <div><h2>Integrationen</h2><p class="sub" style="margin:0">Echte Anmeldung für Facebook, Instagram, TikTok, YouTube und Snapchat. Client-IDs sind öffentlich, Secrets gehören nur auf den Server. Werte aus dem Build der Seite sind schon eingetragen.</p></div>
+    <div><span class="field-label">Redirect-URI</span><input class="input" readonly value="${esc(redirectUri())}" onclick="this.select()"><div class="hint">Trag genau diese Adresse in den Entwicklereinstellungen jeder Plattform als erlaubte Redirect- bzw. Callback-URL ein.</div></div>
+    <div class="form-grid">${INTEGRATION_FIELDS.map((f) => `<div><label class="field-label" for="int-${f.key}">${f.label}${f.platform ? (isConfigured(f.platform) ? ' <span class="tag live">bereit</span>' : ' <span class="tag">nicht gesetzt</span>') : ''}</label><input class="input" id="int-${f.key}" data-int="${f.key}" value="${esc(c[f.key])}" autocomplete="off" spellcheck="false"><div class="hint">${f.hint}</div></div>`).join('')}</div>
+    <div class="row" style="justify-content:flex-end"><button class="btn primary" type="submit">Integrationen speichern</button></div>
   </form>`;
 }
 
@@ -865,19 +866,19 @@ let shortcutShown: string | null = null;
 
 /** How to build the Shortcut on the iPhone; the key is shown once. */
 function shortcutSteps(key: string) {
-  const field = (id: string, label: string, value: string) => `<div><label class="field-label" for="${id}">${label}</label><div class="copy-row"><input class="input" id="${id}" readonly value="${esc(value)}" onclick="this.select()"><button class="btn small" data-action="copy-value" data-v="${id}">Copy</button></div></div>`;
+  const field = (id: string, label: string, value: string) => `<div><label class="field-label" for="${id}">${label}</label><div class="copy-row"><input class="input" id="${id}" readonly value="${esc(value)}" onclick="this.select()"><button class="btn small" data-action="copy-value" data-v="${id}">Kopieren</button></div></div>`;
   return `<div class="stack shortcut-steps">
-    ${field('sc-url', 'Address', inboxEndpoint())}
-    ${field('sc-auth', 'Authorization (keep it to yourself)', `Bearer ${key}`)}
+    ${field('sc-url', 'Adresse (URL)', inboxEndpoint())}
+    ${field('sc-auth', 'Text für den Header „Authorization“ (nicht weitergeben)', `Bearer ${key}`)}
     <ol class="steps-list">
-      <li>Open <b>Shortcuts</b> (Kurzbefehle) on the iPhone, tap <b>+</b> and name it <b>An Crosspost senden</b>.</li>
-      <li>Tap the <b>ⓘ</b> (or the name) → turn on <b>Show in Share Sheet</b> (Im Share-Sheet anzeigen); as input allow <b>Media</b> (Medien).</li>
-      <li>Add <b>Get Contents of URL</b> (Inhalte von URL abrufen): paste the <b>Address</b>, Method <b>POST</b>, add a header <b>Authorization</b> with the value above, Request Body <b>File</b> (Datei) → <b>Shortcut Input</b> (Kurzbefehleingabe).</li>
-      <li>Add <b>Get Dictionary Value</b> (Wörterbuchwert abrufen): Key <b>open_url</b>, from <b>Contents of URL</b>.</li>
-      <li>Add <b>Open URLs</b> (URLs öffnen) with the <b>Dictionary Value</b>. Done.</li>
-      <li>In Edits: export the video, tap <b>Share</b> → <b>An Crosspost senden</b>. Crosspost opens with the video in a new post.</li>
+      <li>Öffne auf dem iPhone die App <b>Kurzbefehle</b>, tippe auf <b>+</b> und nenne den Kurzbefehl <b>An Crosspost senden</b>.</li>
+      <li>Tippe auf <b>ⓘ</b> (oder oben auf den Namen → <b>Details</b>) und schalte <b>Im Share-Sheet anzeigen</b> ein. Als Eingabe lässt du nur <b>Medien</b> zu.</li>
+      <li>Füge die Aktion <b>Inhalte von URL abrufen</b> hinzu und setze als URL die <b>Adresse</b> von oben ein. Stell die Methode auf <b>POST</b> und füge unter <b>Header</b> einen neuen Header hinzu: Schlüssel <b>Authorization</b>, Text: der Wert aus dem Feld darüber (beginnt mit „Bearer“). Stell den Anfragetext (je nach iOS-Version „Haupttext anfordern“) auf <b>Datei</b> und wähle dort <b>Kurzbefehleingabe</b>.</li>
+      <li>Füge die Aktion <b>Wörterbuchwert abrufen</b> hinzu: Schlüssel <b>open_url</b>, Wörterbuch <b>Inhalte der URL</b>.</li>
+      <li>Füge die Aktion <b>URLs öffnen</b> hinzu – sie nimmt den <b>Wörterbuchwert</b>. Fertig.</li>
+      <li>In Edits: Exportiere das Video und tippe auf <b>Teilen</b> → <b>An Crosspost senden</b>. Crosspost öffnet sich mit dem Video in einem neuen Post.</li>
     </ol>
-    <p class="hint">Videos up to 100 MB. The key is shown only now; if you lose it, set up a new one.</p>
+    <p class="hint">Videos bis 100 MB. Der Schlüssel wird nur jetzt angezeigt – wenn du ihn verlierst, richte einfach einen neuen ein.</p>
   </div>`;
 }
 
@@ -886,27 +887,27 @@ function viewSettings() {
   let zones: string[] = [];
   try { zones = (Intl as unknown as { supportedValuesOf(k: string): string[] }).supportedValuesOf('timeZone'); } catch { zones = [u.timezone]; }
   if (!zones.includes(u.timezone)) zones.unshift(u.timezone);
-  return shell('Settings', `
+  return shell('Einstellungen', `
     <div class="grid-2">
       <form class="card stack" id="settings-form">
-        <h2>Profile</h2>
+        <h2>Profil</h2>
         <div><label class="field-label" for="s-name">Name</label><input class="input" id="s-name" value="${esc(u.name)}"></div>
-        <div><label class="field-label" for="s-tz">Time zone</label><select class="select" id="s-tz">${zones.map((z) => `<option ${z === u.timezone ? 'selected' : ''}>${z}</option>`).join('')}</select></div>
-        <div class="row" style="justify-content:flex-end"><button class="btn primary" type="submit">Save changes</button></div>
+        <div><label class="field-label" for="s-tz">Zeitzone</label><select class="select" id="s-tz">${zones.map((z) => `<option ${z === u.timezone ? 'selected' : ''}>${z}</option>`).join('')}</select></div>
+        <div class="row" style="justify-content:flex-end"><button class="btn primary" type="submit">Änderungen speichern</button></div>
       </form>
       <section class="card stack">
-        <h2>Your data</h2>
-        <p class="sub">Your posts are stored in this browser. Connected accounts and workflows are also kept on the server, the sign-ins encrypted, so posts go out while this page is closed and every device you use shows the same accounts.</p>
-        <div class="row"><button class="btn" data-action="export">Download my data</button><button class="btn danger" data-action="wipe">Delete posts &amp; workflows</button></div>
-        <h2 style="margin-top:24px">Videos in this browser</h2>
-        <p class="sub">Videos you post are kept here (up to 1 GB each), so you can watch a post again and post it once more. <span id="kept-usage"></span></p>
-        <div class="row"><button class="btn" data-action="forget-videos">Remove kept videos</button></div>
-        <h2 style="margin-top:24px">iPhone: share from Edits</h2>
-        <p class="sub">A Shortcut puts “An Crosspost senden” into the iPhone's share menu. Shared videos land in your Inbox and open right away in a new post.</p>
-        <div class="row"><button class="btn" data-action="shortcut-key">Set up the Shortcut</button></div>
+        <h2>Deine Daten</h2>
+        <p class="sub">Deine Posts werden in diesem Browser gespeichert. Verbundene Konten und Workflows liegen zusätzlich auf dem Server, die Anmeldungen verschlüsselt – so gehen Posts auch raus, wenn diese Seite geschlossen ist, und jedes deiner Geräte zeigt dieselben Konten.</p>
+        <div class="row"><button class="btn" data-action="export">Meine Daten herunterladen</button><button class="btn danger" data-action="wipe">Posts &amp; Workflows löschen</button></div>
+        <h2 style="margin-top:24px">Videos in diesem Browser</h2>
+        <p class="sub">Videos, die du postest, werden hier aufbewahrt (bis 1 GB pro Video) – so kannst du einen Post noch einmal ansehen und erneut posten. <span id="kept-usage"></span></p>
+        <div class="row"><button class="btn" data-action="forget-videos">Aufbewahrte Videos entfernen</button></div>
+        <h2 style="margin-top:24px">iPhone: aus Edits teilen</h2>
+        <p class="sub">Ein Kurzbefehl bringt „An Crosspost senden“ ins Teilen-Menü des iPhones. Geteilte Videos landen in deinem Eingang und öffnen sich direkt in einem neuen Post.</p>
+        <div class="row"><button class="btn" data-action="shortcut-key">Kurzbefehl einrichten</button></div>
         <div id="shortcut-setup">${shortcutShown ? shortcutSteps(shortcutShown) : ''}</div>
-        <h2 style="margin-top:24px">About publishing</h2>
-        <p class="sub">Accounts marked <b>Live</b> publish for real. Accounts marked <b>Demo</b> are simulated. Posts with a video and workflows from Instagram go through the server and run around the clock.</p>
+        <h2 style="margin-top:24px">So wird veröffentlicht</h2>
+        <p class="sub">Konten mit <b>Live</b> veröffentlichen wirklich, bei Konten mit <b>Demo</b> wird das Veröffentlichen nur simuliert. Posts mit Video und Workflows von Instagram laufen über den Server – rund um die Uhr.</p>
       </section>
     </div>
     ${integrationsCard()}`, '#/settings');
@@ -925,7 +926,7 @@ function render() {
   const scroll = window.scrollY;
   const focusId = (document.activeElement as HTMLElement | null)?.id;
   root.innerHTML = view();
-  document.title = `${root.querySelector('.topbar h1')?.textContent ?? 'Dashboard'} - Crosspost`;
+  document.title = `${root.querySelector('.topbar h1')?.textContent ?? 'Übersicht'} – Crosspost`;
   window.scrollTo(0, scroll);
   if (focusId) document.getElementById(focusId)?.focus();
   mount(path!);
@@ -935,7 +936,7 @@ function mount(path: string) {
   if (path === '/inbox') refreshInbox().catch((e: Error) => toast(e.message));
   if (path === '/post') mountPostMedia();
   if (path === '/settings') {
-    keptVideosUsage().then((u) => { const el = root.querySelector('#kept-usage'); if (el) el.textContent = u.count ? `Now: ${u.count} ${u.count === 1 ? 'video' : 'videos'}, ${fmtSize(u.bytes)}.` : 'None kept yet.'; });
+    keptVideosUsage().then((u) => { const el = root.querySelector('#kept-usage'); if (el) el.textContent = u.count ? `Aktuell: ${u.count} ${u.count === 1 ? 'Video' : 'Videos'}, ${fmtSize(u.bytes)}.` : 'Noch keine aufbewahrt.'; });
   }
   if (path === '/create') {
     const d = draft!;
@@ -951,7 +952,7 @@ function mount(path: string) {
     root.querySelector<HTMLInputElement>('#c-title')!.addEventListener('input', (e) => { d.title = (e.target as HTMLInputElement).value; });
     root.querySelector<HTMLTextAreaElement>('#c-caption')!.addEventListener('input', (e) => {
       d.caption = (e.target as HTMLTextAreaElement).value;
-      root.querySelector('#c-count')!.textContent = `${d.caption.length} characters`;
+      root.querySelector('#c-count')!.textContent = `${d.caption.length} Zeichen`;
       root.querySelector('#ph-cap')!.textContent = d.caption;
       updateWarnings();
     });
@@ -971,19 +972,19 @@ function mount(path: string) {
       const val = (id: string) => form.querySelector<HTMLInputElement>(id)!;
       const sourceId = form.querySelector<HTMLInputElement>('input[name=wf-src]:checked')?.value ?? '';
       const destinationIds = [...form.querySelectorAll<HTMLInputElement>('input[name=wf-dest]:checked')].map((i) => i.value);
-      if (!sourceId) { toast('Choose a source account'); return; }
-      if (!destinationIds.length) { toast('Choose at least one destination'); return; }
+      if (!sourceId) { toast('Wähle ein Quellkonto aus'); return; }
+      if (!destinationIds.length) { toast('Wähle mindestens ein Ziel aus'); return; }
       const old = store.workflows().find((w) => w.id === form.dataset.id);
       const src = store.account(sourceId)!;
       store.saveWorkflow({
-        id: form.dataset.id!, name: val('#wf-name').value.trim() || `${platform(src.platform).name} to ${destinationIds.length} accounts`,
+        id: form.dataset.id!, name: val('#wf-name').value.trim() || `${platform(src.platform).name} an ${accountsText(destinationIds.length)}`,
         sourceId, destinationIds, active: val('#wf-active').checked, autoPublish: val('#wf-auto').checked,
         captionTemplate: (form.querySelector('#wf-template') as HTMLTextAreaElement).value, hashtags: val('#wf-tags').value,
         removeWatermark: val('#wf-wm').checked, delayMinutes: Number((form.querySelector('#wf-delay') as HTMLSelectElement).value),
         createdAt: old?.createdAt ?? Date.now(), runs: old?.runs ?? 0,
       });
       scheduleSync();
-      toast(old ? 'Workflow saved' : 'Workflow created');
+      toast(old ? 'Workflow gespeichert' : 'Workflow erstellt');
       location.hash = '#/workflows';
     });
   }
@@ -993,13 +994,13 @@ function mount(path: string) {
       const values: Record<string, string> = {};
       root.querySelectorAll<HTMLInputElement>('[data-int]').forEach((i) => { values[i.dataset.int!] = i.value.trim(); });
       saveIntegrations(values);
-      toast('Integrations saved');
+      toast('Integrationen gespeichert');
       render();
     });
     root.querySelector<HTMLFormElement>('#settings-form')!.addEventListener('submit', (e) => {
       e.preventDefault();
       store.updateUser({ name: root.querySelector<HTMLInputElement>('#s-name')!.value.trim(), timezone: root.querySelector<HTMLSelectElement>('#s-tz')!.value });
-      toast('Settings saved');
+      toast('Einstellungen gespeichert');
     });
   }
 }
@@ -1017,9 +1018,9 @@ function updateWarnings() {
 
 function connectDialog(id: PlatformId) {
   const p = platform(id);
-  modal(`<h3>${badge(id, 30)}Connect ${p.name}</h3><p>${p.hint} Enter the account name you want to connect.</p>
-    <label class="field-label" for="m-handle">Account name</label><input class="input" id="m-handle" placeholder="@yourname">
-    <div class="row"><button class="btn" data-x>Cancel</button><button class="btn primary" data-ok>Connect</button></div>`, (el, close) => {
+  modal(`<h3>${badge(id, 30)}${p.name} verbinden</h3><p>${p.hint} Gib den Namen des Kontos ein, das du verbinden willst.</p>
+    <label class="field-label" for="m-handle">Kontoname</label><input class="input" id="m-handle" placeholder="@deinname">
+    <div class="row"><button class="btn" data-x>Abbrechen</button><button class="btn primary" data-ok>Verbinden</button></div>`, (el, close) => {
     const input = el.querySelector<HTMLInputElement>('#m-handle')!;
     input.focus();
     const ok = () => {
@@ -1027,7 +1028,7 @@ function connectDialog(id: PlatformId) {
       if (!h) { input.focus(); return; }
       close();
       store.connectAccount(id, h);
-      toast(`${p.name} @${h} connected`);
+      toast(`${p.name} @${h} verbunden`);
     };
     el.querySelector('[data-x]')!.addEventListener('click', close);
     el.querySelector('[data-ok]')!.addEventListener('click', ok);
@@ -1057,42 +1058,42 @@ root.addEventListener('click', (e) => {
     case 'when': syncDraftFromForm(draft!); draft!.when = v as 'now' | 'later'; render(); break;
     case 'save-draft': savePostFromDraft(false); break;
     case 'publish': savePostFromDraft(true); break;
-    case 'approve': if (post?.remote) remoteDo(post, 'approve', 'Approved: publishing'); else if (post) { post.deliveries.forEach((d) => { if (d.status === 'draft') d.status = 'scheduled'; }); if (post.scheduledAt < Date.now()) post.scheduledAt = Date.now(); store.savePost(post); processQueue(); toast('Approved: publishing'); } break;
-    case 'retry': if (post?.remote) remoteDo(post, 'retry', 'Trying again'); else if (post) { post.deliveries.forEach((d) => { if (d.status === 'failed') { d.status = 'scheduled'; d.error = undefined; } }); post.scheduledAt = Math.min(post.scheduledAt, Date.now()); store.savePost(post); processQueue(); } break;
-    case 'delete-post': if (post) confirmBox('Delete this post?', 'It is removed from your content list, and the video kept in this browser goes too. Posts already published stay on the platforms.', 'Delete', () => {
+    case 'approve': if (post?.remote) remoteDo(post, 'approve', 'Freigegeben – wird veröffentlicht'); else if (post) { post.deliveries.forEach((d) => { if (d.status === 'draft') d.status = 'scheduled'; }); if (post.scheduledAt < Date.now()) post.scheduledAt = Date.now(); store.savePost(post); processQueue(); toast('Freigegeben – wird veröffentlicht'); } break;
+    case 'retry': if (post?.remote) remoteDo(post, 'retry', 'Neuer Versuch läuft'); else if (post) { post.deliveries.forEach((d) => { if (d.status === 'failed') { d.status = 'scheduled'; d.error = undefined; } }); post.scheduledAt = Math.min(post.scheduledAt, Date.now()); store.savePost(post); processQueue(); } break;
+    case 'delete-post': if (post) confirmBox('Diesen Post löschen?', 'Er verschwindet aus deiner Inhaltsliste, und das in diesem Browser aufbewahrte Video wird auch entfernt. Bereits veröffentlichte Posts bleiben auf den Plattformen.', 'Löschen', () => {
       forgetVideo(post.id);
-      if (post.remote) remoteDo(post, 'delete', 'Post deleted'); else { store.deletePost(post.id); toast('Post deleted'); }
+      if (post.remote) remoteDo(post, 'delete', 'Post gelöscht'); else { store.deletePost(post.id); toast('Post gelöscht'); }
       if (location.hash.startsWith('#/post')) location.hash = '#/posts';
     }); break;
-    case 'post-again': if (post) draftFromPost(post).then((d) => { draft = d; location.hash = '#/create?from=' + encodeURIComponent(post.id); toast(d.mediaName ? 'Copied into a new post' : 'Copied the text – choose the video again'); }); break;
-    case 'copy': { const t = document.getElementById(v!)?.innerText ?? ''; navigator.clipboard.writeText(t).then(() => toast('Copied'), () => toast('Copying is not allowed here')); break; }
-    case 'inbox-delete': if (id) confirmBox('Delete this video?', 'It is removed from your inbox and from the server.', 'Delete', () => { deleteInboxItem(id).then(() => toast('Deleted'), (err: Error) => toast(err.message)); }); break;
-    case 'shortcut-key': confirmBox('Set up the iPhone Shortcut?', 'You get a new key for the Shortcut. A key you made before stops working.', 'Create key', () => {
+    case 'post-again': if (post) draftFromPost(post).then((d) => { draft = d; location.hash = '#/create?from=' + encodeURIComponent(post.id); toast(d.mediaName ? 'In einen neuen Post kopiert' : 'Text kopiert – wähle das Video noch einmal aus'); }); break;
+    case 'copy': { const t = document.getElementById(v!)?.innerText ?? ''; navigator.clipboard.writeText(t).then(() => toast('Kopiert'), () => toast('Kopieren ist hier nicht erlaubt')); break; }
+    case 'inbox-delete': if (id) confirmBox('Dieses Video löschen?', 'Es wird aus deinem Eingang und vom Server entfernt.', 'Löschen', () => { deleteInboxItem(id).then(() => toast('Gelöscht'), (err: Error) => toast(err.message)); }); break;
+    case 'shortcut-key': confirmBox('iPhone-Kurzbefehl einrichten?', 'Du bekommst einen neuen Schlüssel für den Kurzbefehl. Ein früherer Schlüssel funktioniert dann nicht mehr.', 'Schlüssel erstellen', () => {
       createShortcutKey().then((key) => { shortcutShown = key; render(); }, (err: Error) => toast(err.message));
     }); break;
-    case 'copy-value': { const t = root.querySelector<HTMLInputElement>(`#${v}`)?.value ?? ''; navigator.clipboard.writeText(t).then(() => toast('Copied'), () => toast('Copying is not allowed here')); break; }
-    case 'forget-videos': confirmBox('Remove kept videos?', 'Posts stay in your content list; only the video copies in this browser are removed. Published posts stay on the platforms.', 'Remove', () => { forgetAllVideos().then(() => { toast('Kept videos removed'); render(); }); }); break;
+    case 'copy-value': { const t = root.querySelector<HTMLInputElement>(`#${v}`)?.value ?? ''; navigator.clipboard.writeText(t).then(() => toast('Kopiert'), () => toast('Kopieren ist hier nicht erlaubt')); break; }
+    case 'forget-videos': confirmBox('Aufbewahrte Videos entfernen?', 'Posts bleiben in deiner Inhaltsliste – nur die Videokopien in diesem Browser werden entfernt. Veröffentlichte Posts bleiben auf den Plattformen.', 'Entfernen', () => { forgetAllVideos().then(() => { toast('Aufbewahrte Videos entfernt'); render(); }); }); break;
     case 'tab': postTab = v as typeof postTab; render(); break;
     case 'cal': calMonth = v === '0' ? new Date(new Date().getFullYear(), new Date().getMonth(), 1) : new Date(calMonth.getFullYear(), calMonth.getMonth() + Number(v), 1); render(); break;
-    case 'wf-toggle': { const w = store.workflows().find((x) => x.id === id); if (w) { w.active = (el as HTMLInputElement).checked; store.saveWorkflow(w); scheduleSync(); toast(w.active ? 'Workflow active' : 'Workflow paused'); } break; }
+    case 'wf-toggle': { const w = store.workflows().find((x) => x.id === id); if (w) { w.active = (el as HTMLInputElement).checked; store.saveWorkflow(w); scheduleSync(); toast(w.active ? 'Workflow aktiv' : 'Workflow pausiert'); } break; }
     case 'wf-run': {
       const w = store.workflows().find((x) => x.id === id);
       if (w && runsOnServer(w)) {
-        toast('Checking Instagram…');
+        toast('Instagram wird geprüft…');
         runServerWorkflow(w.id)
-          .then((r) => toast(r.found ? `Picked up the latest video – see Content` : 'No new video on Instagram'))
+          .then((r) => toast(r.found ? 'Neuestes Video übernommen – siehe „Inhalte“' : 'Kein neues Video auf Instagram'))
           .catch((err: Error) => toast(err.message));
       } else if (w) runWorkflow(w);
       break;
     }
-    case 'wf-delete': { const w = store.workflows().find((x) => x.id === id); if (w) confirmBox('Delete workflow?', `"${w.name}" stops picking up new content.`, 'Delete', () => { store.deleteWorkflow(w.id); scheduleSync(); toast('Workflow deleted'); }); break; }
+    case 'wf-delete': { const w = store.workflows().find((x) => x.id === id); if (w) confirmBox('Workflow löschen?', `„${w.name}“ holt dann keine neuen Inhalte mehr.`, 'Löschen', () => { store.deleteWorkflow(w.id); scheduleSync(); toast('Workflow gelöscht'); }); break; }
     case 'connect': {
       const id = v as PlatformId;
       if (isOAuth(id) && isConfigured(id)) startOAuth(id).catch((e: Error) => toast(e.message));
       else connectDialog(id);
       break;
     }
-    case 'disconnect': { const a = store.account(id!); if (a) confirmBox(`Disconnect @${a.handle}?`, 'Workflows that use this account stop sending to it.', 'Disconnect', () => { store.disconnectAccount(a.id); scheduleSync(); }); break; }
+    case 'disconnect': { const a = store.account(id!); if (a) confirmBox(`@${a.handle} trennen?`, 'Workflows mit diesem Konto senden dann nicht mehr dorthin.', 'Trennen', () => { store.disconnectAccount(a.id); scheduleSync(); }); break; }
     case 'export': {
       const data = { user: { ...store.currentUser(), passwordHash: undefined }, accounts: store.accounts(), workflows: store.workflows(), posts: store.posts().map((p) => ({ ...p, thumb: undefined })) };
       const a = document.createElement('a');
@@ -1101,7 +1102,7 @@ root.addEventListener('click', (e) => {
       a.click();
       break;
     }
-    case 'wipe': confirmBox('Delete all posts and workflows?', 'Connected accounts stay. This cannot be undone.', 'Delete all', () => { store.posts().slice().forEach((p) => store.deletePost(p.id)); store.workflows().slice().forEach((w) => store.deleteWorkflow(w.id)); scheduleSync(); toast('Deleted'); }); break;
+    case 'wipe': confirmBox('Alle Posts und Workflows löschen?', 'Verbundene Konten bleiben. Das lässt sich nicht rückgängig machen.', 'Alle löschen', () => { store.posts().slice().forEach((p) => store.deletePost(p.id)); store.workflows().slice().forEach((w) => store.deleteWorkflow(w.id)); scheduleSync(); toast('Gelöscht'); }); break;
   }
 });
 

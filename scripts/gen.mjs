@@ -10,7 +10,7 @@ const BRAND = 'Crosspost';
 // scripts, styles and pictures itself; plain links are prefixed here.
 const BASE = (process.env.BASE_PATH || '/').replace(/\/?$/, '/');
 
-function page({ title, body, script, bodyClass = '', lang = '' }) {
+function page({ title, body, script, bodyClass = '', lang = 'de' }) {
   return `<!doctype html>
 <html${lang ? ` lang="${lang}"` : ''}>
 <head>
@@ -36,28 +36,28 @@ function write(rel, html) {
 }
 
 // Plain text pages linked from the footer.
-const textPage = (heading, paras) => `<main class="text-page"><a href="/dashboard/" class="text-back">${icons.chevronLeft} Back to Crosspost</a><h1>${heading}</h1>${paras.map((p) => `<p>${p}</p>`).join('')}</main>`;
+const textPage = (heading, paras) => `<main class="text-page"><a href="/dashboard/" class="text-back">${icons.chevronLeft} Zurück zu Crosspost</a><h1>${heading}</h1>${paras.map((p) => `<p>${p}</p>`).join('')}</main>`;
 write(
   'privacy/index.html',
   page({
-    title: `Privacy policy - ${BRAND}`,
+    title: `Datenschutzerklärung – ${BRAND}`,
     script: '/src/pages/plain.ts',
-    body: textPage('Privacy policy', [
-      'Your profile, posts and workflows are kept in your own browser (local storage). Videos you post from this browser are kept there too, so you can watch a post again; you can remove them under Settings.',
-      'When you connect Facebook, Instagram, TikTok, YouTube or Snapchat, you sign in on that platform and allow this app to publish for you. The access it receives is stored in your browser. For workflows and scheduled posts it is also stored on our server, encrypted, so posts can go out while the app is closed; disconnecting an account removes it there as well.',
-      'Videos you schedule or publish through the server are kept there only until every platform has fetched them (at most 60 days for scheduled posts) and are then deleted. YouTube uploads made right away go straight from your browser to YouTube.',
-      '<strong>Deleting your data:</strong> disconnect an account under Connected accounts, or delete everything under Settings → Your data. You can also remove the app in the settings of each platform (for example Facebook → Settings → Apps and websites). Questions: write to the address given in the imprint of this site.',
+    body: textPage('Datenschutzerklärung', [
+      'Dein Profil, deine Posts und deine Workflows werden in deinem eigenen Browser gespeichert (Local Storage). Videos, die du aus diesem Browser postest, werden ebenfalls dort aufbewahrt, damit du einen Post noch einmal ansehen kannst; du kannst sie unter „Einstellungen“ entfernen.',
+      'Wenn du Facebook, Instagram, TikTok, YouTube oder Snapchat verbindest, meldest du dich auf der jeweiligen Plattform an und erlaubst dieser App, für dich zu veröffentlichen. Der Zugang, den sie dabei erhält, wird in deinem Browser gespeichert. Für Workflows und geplante Posts wird er außerdem verschlüsselt auf unserem Server gespeichert, damit Posts auch veröffentlicht werden können, während die App geschlossen ist; wenn du ein Konto trennst, wird er auch dort entfernt.',
+      'Videos, die du über den Server planst oder veröffentlichst, werden dort nur so lange aufbewahrt, bis jede Plattform sie abgerufen hat (bei geplanten Posts höchstens 60 Tage), und danach gelöscht. YouTube-Uploads, die sofort erfolgen, gehen direkt von deinem Browser zu YouTube.',
+      '<strong>Deine Daten löschen:</strong> Trenne ein Konto unter „Verbundene Konten“ oder lösche alles unter „Einstellungen → Deine Daten“. Du kannst die App außerdem in den Einstellungen der jeweiligen Plattform entfernen (zum Beispiel Facebook → Einstellungen → Apps und Websites). Fragen: Schreib an die Adresse, die im Impressum dieser Website angegeben ist.',
     ]),
   }),
 );
 write(
   'terms/index.html',
   page({
-    title: `Terms of service - ${BRAND}`,
+    title: `Nutzungsbedingungen – ${BRAND}`,
     script: '/src/pages/plain.ts',
-    body: textPage('Terms of service', [
-      'Sample terms for this rebuild. Replace this text with your own terms before you publish the tool.',
-      'Only post content you own or have the rights to share, and follow the rules of every platform you publish to.',
+    body: textPage('Nutzungsbedingungen', [
+      'Beispiel-Nutzungsbedingungen für diesen Nachbau. Ersetze diesen Text durch deine eigenen Bedingungen, bevor du das Tool veröffentlichst.',
+      'Poste nur Inhalte, die dir gehören oder für die du die Rechte zum Teilen hast, und halte dich an die Regeln jeder Plattform, auf der du veröffentlichst.',
     ]),
   }),
 );
@@ -66,22 +66,22 @@ write(
 write(
   'oauth/callback/index.html',
   page({
-    title: `Verbinden - ${BRAND}`,
+    title: `Verbinden – ${BRAND}`,
     script: '/src/pages/callback.ts',
     bodyClass: 'auth-page',
-    body: `<main class="text-page"><h1 id="oauth-status">Verbinde Konto …</h1><p id="oauth-detail">Einen Moment bitte.</p><a id="oauth-back" class="pink-link" href="/dashboard/#/accounts" hidden>Zurück</a></main>`,
+    body: `<main class="text-page"><h1 id="oauth-status">Konto wird verbunden…</h1><p id="oauth-detail">Einen Moment bitte.</p><a id="oauth-back" class="pink-link" href="/dashboard/#/accounts" hidden>Zurück</a></main>`,
   }),
 );
 
 // The app itself – there is no sign-in.
 write(
   'dashboard/index.html',
-  page({ title: `Dashboard - ${BRAND}`, script: '/src/pages/app.ts', bodyClass: 'app-page', body: `<div id="app"></div>` }),
+  page({ title: `Übersicht – ${BRAND}`, script: '/src/pages/app.ts', bodyClass: 'app-page', body: `<div id="app"></div>` }),
 );
 
 // No sign-in: the start page and the old sign-in addresses lead straight into the app.
 const redirect = (to) => `<!doctype html>
-<html>
+<html lang="de">
 <head>
 <meta charset="utf-8">
 <meta http-equiv="refresh" content="0; url=${to}">

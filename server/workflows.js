@@ -52,7 +52,7 @@ function cleanOptions(platform, o) {
   }
   return {};
 }
-const LICENSED = 'Instagram does not release this video for download – usually because it uses licensed music. Upload the original file instead.';
+const LICENSED = 'Instagram gibt dieses Video nicht zum Herunterladen frei – meist, weil es lizenzierte Musik enthält. Lade stattdessen die Originaldatei hoch.';
 
 export class HttpError extends Error {
   constructor(status, message) { super(message); this.status = status; }
@@ -71,7 +71,7 @@ const parseTime = (s) => Date.parse(String(s || '').replace(/([+-]\d\d)(\d\d)$/,
 // ---------- stored sign-ins are encrypted (AES-GCM) ----------
 let keyCache;
 async function tokenKey(env) {
-  if (!env.TOKEN_KEY) throw new Error('Server setting TOKEN_KEY is missing');
+  if (!env.TOKEN_KEY) throw new Error('Server-Einstellung TOKEN_KEY fehlt');
   if (keyCache?.raw !== env.TOKEN_KEY) {
     keyCache = { raw: env.TOKEN_KEY, key: await crypto.subtle.importKey('raw', fromB64(env.TOKEN_KEY), 'AES-GCM', false, ['encrypt', 'decrypt']) };
   }
@@ -95,31 +95,31 @@ export async function unseal(env, sealed) {
 
 export function workflowEngine({ call, publish, publishStatus, refresh, GRAPH, TIKTOK }) {
   const db = (env) => {
-    if (!env.DB) throw new Error('Database DB is not bound');
+    if (!env.DB) throw new Error('Datenbank DB ist nicht eingebunden');
     return env.DB;
   };
   const publicUrl = (env) => {
-    if (!env.PUBLIC_URL) throw new Error('Server setting PUBLIC_URL is missing');
+    if (!env.PUBLIC_URL) throw new Error('Server-Einstellung PUBLIC_URL fehlt');
     return env.PUBLIC_URL.replace(/\/$/, '');
   };
 
   // ---------- who is asking ----------
   async function requireUser(request, env) {
     const m = /^Bearer\s+([0-9a-f]{64})$/.exec(request.headers.get('Authorization') || '');
-    if (!m) throw new HttpError(401, 'Not signed in to the server');
+    if (!m) throw new HttpError(401, 'Nicht beim Server angemeldet');
     const row = await db(env).prepare('SELECT user_id FROM sessions WHERE key_hash = ?').bind(await sha256(m[1])).first();
-    if (!row) throw new HttpError(401, 'The server session has ended – reload the page');
+    if (!row) throw new HttpError(401, 'Die Sitzung beim Server ist abgelaufen – lade die Seite neu');
     return row.user_id;
   }
 
   /** The platform confirms whose sign-in this is; the answer names the user. */
   async function verifyIdentity({ platform, access_token, account_id }) {
-    if (!access_token) throw new Error('access_token is required');
+    if (!access_token) throw new Error('access_token ist erforderlich');
     const t = encodeURIComponent(access_token);
     if (platform === 'instagram') {
-      if (!account_id) throw new Error('account_id is required');
+      if (!account_id) throw new Error('account_id ist erforderlich');
       const me = await call(`${GRAPH}/${encodeURIComponent(account_id)}?fields=id&access_token=${t}`);
-      if (String(me.id) !== String(account_id)) throw new Error('This sign-in does not belong to that Instagram account');
+      if (String(me.id) !== String(account_id)) throw new Error('Diese Anmeldung gehört nicht zu diesem Instagram-Konto');
       return `instagram:${me.id}`;
     }
     if (platform === 'facebook') {
@@ -129,16 +129,16 @@ export function workflowEngine({ call, publish, publishStatus, refresh, GRAPH, T
     if (platform === 'tiktok') {
       const me = await call(`${TIKTOK}/user/info/?fields=open_id`, { headers: { Authorization: `Bearer ${access_token}` } });
       const id = me.data?.user?.open_id;
-      if (!id) throw new Error('TikTok did not confirm the account');
+      if (!id) throw new Error('TikTok hat das Konto nicht bestätigt');
       return `tiktok:${id}`;
     }
     if (platform === 'youtube') {
       const me = await call('https://www.googleapis.com/youtube/v3/channels?part=id&mine=true', { headers: { Authorization: `Bearer ${access_token}` } });
       const id = me.items?.[0]?.id;
-      if (!id) throw new Error('This Google account has no YouTube channel');
+      if (!id) throw new Error('Dieses Google-Konto hat keinen YouTube-Kanal');
       return `youtube:${id}`;
     }
-    throw new Error(`Signing in with ${platform} is not supported`);
+    throw new Error(`Anmelden mit ${platform} wird nicht unterstützt`);
   }
 
   async function createSession(body, env) {
@@ -173,11 +173,11 @@ export function workflowEngine({ call, publish, publishStatus, refresh, GRAPH, T
   async function useLinkCode(body, env) {
     const D = db(env);
     const code = String(body?.code || '');
-    if (!/^[0-9a-f]{48}$/.test(code)) throw new HttpError(400, 'This link is not valid.');
+    if (!/^[0-9a-f]{48}$/.test(code)) throw new HttpError(400, 'Dieser Link ist ungültig.');
     const hash = await sha256(code);
     const row = await D.prepare('SELECT user_id, expires_at FROM link_codes WHERE code_hash = ?').bind(hash).first();
     await D.prepare('DELETE FROM link_codes WHERE code_hash = ? OR expires_at < ?').bind(hash, now()).run();
-    if (!row || row.expires_at < now()) throw new HttpError(400, 'This link has expired – share the video again or connect Instagram on this device.');
+    if (!row || row.expires_at < now()) throw new HttpError(400, 'Dieser Link ist abgelaufen – teile das Video noch einmal oder verbinde Instagram auf diesem Gerät.');
     return { key: await newSession(env, row.user_id, 'web') };
   }
 
@@ -250,7 +250,7 @@ export function workflowEngine({ call, publish, publishStatus, refresh, GRAPH, T
 
   // ---------- inbox: videos sent in, waiting to be posted ----------
   async function addToInbox(userId, request, url, env) {
-    if (!env.SITE_URL) throw new Error('Server setting SITE_URL is missing');
+    if (!env.SITE_URL) throw new Error('Server-Einstellung SITE_URL fehlt');
     const name = (url.searchParams.get('name') || 'video.mp4').replace(/[^\w.-]+/g, '_').slice(-80);
     const type = (request.headers.get('Content-Type') || '').split(';')[0].trim();
     const mediaType = /^video\//.test(type) ? type : 'video/mp4';
@@ -261,7 +261,7 @@ export function workflowEngine({ call, publish, publishStatus, refresh, GRAPH, T
     const body = length > 0 ? request.body : await request.arrayBuffer();
     const put = await env.MEDIA.put(key, body, { httpMetadata: { contentType: mediaType } });
     const size = put?.size ?? (length > 0 ? length : body.byteLength);
-    if (!size) { await env.MEDIA.delete(key).catch(() => {}); throw new HttpError(400, 'No video arrived – share the video file itself.'); }
+    if (!size) { await env.MEDIA.delete(key).catch(() => {}); throw new HttpError(400, 'Es ist kein Video angekommen – teile direkt die Videodatei.'); }
     await db(env).prepare('INSERT INTO inbox (id, user_id, r2_key, name, type, size, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)').bind(id, userId, key, name, mediaType, size, now()).run();
     const code = await newLinkCode(env, userId);
     return { id, open_url: `${env.SITE_URL.replace(/\/?$/, '/')}#/create?inbox=${id}&link=${code}` };
@@ -275,7 +275,7 @@ export function workflowEngine({ call, publish, publishStatus, refresh, GRAPH, T
   async function removeFromInbox(userId, id, env) {
     const D = db(env);
     const row = await D.prepare('SELECT r2_key FROM inbox WHERE user_id = ? AND id = ?').bind(userId, id).first();
-    if (!row) throw new HttpError(404, 'Not found');
+    if (!row) throw new HttpError(404, 'Nicht gefunden');
     await D.prepare('DELETE FROM inbox WHERE user_id = ? AND id = ?').bind(userId, id).run();
     await env.MEDIA.delete(row.r2_key).catch(() => {});
     return { deleted: true };
@@ -320,8 +320,8 @@ export function workflowEngine({ call, publish, publishStatus, refresh, GRAPH, T
       const platform = accounts.get(accountId) || 'unknown';
       let status = w.auto_publish ? 'scheduled' : 'draft';
       let error = null;
-      if (!accounts.has(accountId)) { status = 'failed'; error = 'This account is only connected as a demo. Connect it for real, then retry.'; }
-      else if (!DESTINATIONS.includes(platform)) { status = 'failed'; error = `Workflows can't post to ${platform} yet.`; }
+      if (!accounts.has(accountId)) { status = 'failed'; error = 'Dieses Konto ist nur als Demo verbunden. Verbinde es live und versuch es dann noch einmal.'; }
+      else if (!DESTINATIONS.includes(platform)) { status = 'failed'; error = `Workflows können noch nicht auf ${platform} posten.`; }
       const options = platform === 'tiktok' ? { tiktok_mode: env.TIKTOK_DEFAULT_MODE === 'direct' ? 'direct' : 'inbox' } : {};
       return D.prepare('INSERT INTO jobs (id, user_id, item_id, account_id, platform, caption, status, scheduled_at, error, options, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
         .bind(newId(), w.user_id, itemId, accountId, platform, fitCaption(applyTemplate(w, media.caption || ''), platform), status, at, error, JSON.stringify(options), now());
@@ -336,8 +336,8 @@ export function workflowEngine({ call, publish, publishStatus, refresh, GRAPH, T
     const checked = now();
     try {
       const src = await D.prepare('SELECT platform, remote_id, access_token FROM accounts WHERE user_id = ? AND id = ?').bind(w.user_id, w.source_id).first();
-      if (!src) throw new Error('The source account is not connected for real.');
-      if (src.platform !== 'instagram') throw new Error(`Only Instagram can be a source so far, not ${src.platform}.`);
+      if (!src) throw new Error('Das Quellkonto ist nicht live verbunden.');
+      if (src.platform !== 'instagram') throw new Error(`Bisher kann nur Instagram eine Quelle sein, nicht ${src.platform}.`);
       const token = await unseal(env, src.access_token);
       const list = await call(`${GRAPH}/${src.remote_id}/media?fields=id,caption,media_type,thumbnail_url,permalink,timestamp&limit=10&access_token=${encodeURIComponent(token)}`);
       const videos = (list.data || []).filter((m) => m.media_type === 'VIDEO').map((m) => ({ ...m, ts: parseTime(m.timestamp) }));
@@ -369,7 +369,7 @@ export function workflowEngine({ call, publish, publishStatus, refresh, GRAPH, T
     const access = await unseal(env, job.access_token);
     if (!job.expires_at || job.expires_at - 120_000 > now()) return access;
     const rt = await unseal(env, job.refresh_token);
-    if (!rt) throw new Error('The sign-in has expired – connect the account again.');
+    if (!rt) throw new Error('Die Anmeldung ist abgelaufen – verbinde das Konto neu.');
     const t = await refresh({ platform: job.acc_platform, refresh_token: rt }, env);
     await db(env).prepare('UPDATE accounts SET access_token = ?, refresh_token = COALESCE(?, refresh_token), expires_at = ?, updated_at = ? WHERE user_id = ? AND id = ?')
       .bind(await seal(env, t.access_token), await seal(env, t.refresh_token), t.expires_in ? now() + t.expires_in * 1000 : null, now(), job.user_id, job.account_id).run();
@@ -380,10 +380,10 @@ export function workflowEngine({ call, publish, publishStatus, refresh, GRAPH, T
   async function ensureCopy(env, job) {
     const D = db(env);
     const item = await D.prepare('SELECT id, kind, user_id, workflow_id, source_media_id, source_account_id, r2_key, copied_at FROM items WHERE id = ?').bind(job.item_id).first();
-    if (!item) throw new Error('The video was deleted.');
+    if (!item) throw new Error('Das Video wurde gelöscht.');
     if (item.kind === 'upload') {
       if (item.r2_key && await env.MEDIA.head(item.r2_key)) return item.r2_key;
-      throw new Error('The uploaded video is gone – plan the post again with the file.');
+      throw new Error('Das hochgeladene Video ist nicht mehr da – plane den Post noch einmal mit der Datei.');
     }
     if (item.r2_key && now() - (item.copied_at || 0) < COPY_FRESH_MS && await env.MEDIA.head(item.r2_key)) return item.r2_key;
     // Ask Instagram for a fresh download address with the source account's sign-in.
@@ -391,12 +391,12 @@ export function workflowEngine({ call, publish, publishStatus, refresh, GRAPH, T
       ? await D.prepare('SELECT access_token FROM accounts WHERE user_id = ? AND id = ?').bind(item.user_id, item.source_account_id).first()
       : await D.prepare(`SELECT a.access_token FROM workflows w JOIN accounts a ON a.user_id = w.user_id AND a.id = w.source_id
         WHERE w.user_id = ? AND w.id = ?`).bind(item.user_id, item.workflow_id).first();
-    if (!src) throw new Error(item.kind === 'instagram' ? 'The Instagram account is no longer connected.' : 'The workflow or its source account is gone.');
+    if (!src) throw new Error(item.kind === 'instagram' ? 'Das Instagram-Konto ist nicht mehr verbunden.' : 'Den Workflow oder sein Quellkonto gibt es nicht mehr.');
     const token = await unseal(env, src.access_token);
     const media = await call(`${GRAPH}/${item.source_media_id}?fields=media_url&access_token=${encodeURIComponent(token)}`);
     if (!media.media_url) throw new Error(LICENSED);
     const res = await fetch(media.media_url);
-    if (!res.ok || !res.body) throw new Error(`Downloading the video from Instagram failed (${res.status}).`);
+    if (!res.ok || !res.body) throw new Error(`Das Video konnte nicht von Instagram geladen werden (${res.status}).`);
     const key = `wf/${item.id}-${now().toString(36)}.mp4`;
     const meta = { httpMetadata: { contentType: 'video/mp4' } };
     const len = Number(res.headers.get('Content-Length'));
@@ -424,7 +424,7 @@ export function workflowEngine({ call, publish, publishStatus, refresh, GRAPH, T
   /** YouTube: resumable upload from our R2 copy. */
   async function youtubeUpload(env, token, key, caption, o = {}, itemTitle = '') {
     const obj = await env.MEDIA.get(key);
-    if (!obj) throw new Error('The copy of the video is gone – retry to copy it again.');
+    if (!obj) throw new Error('Die Kopie des Videos ist nicht mehr da – versuch es erneut, dann wird sie neu angelegt.');
     const clean = (s) => s.replace(/[<>]/g, '').replace(/\s+/g, ' ').trim();
     let title = clean(o.title || itemTitle || firstLine(caption)) || 'Video';
     if (o.short && !/#shorts/i.test(title)) title = `${title.slice(0, 92)} #Shorts`;
@@ -438,12 +438,12 @@ export function workflowEngine({ call, publish, publishStatus, refresh, GRAPH, T
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json; charset=UTF-8', 'X-Upload-Content-Type': 'video/mp4', 'X-Upload-Content-Length': String(obj.size) },
       body: JSON.stringify(meta),
     });
-    if (!start.ok) { await obj.body.cancel().catch(() => {}); throw new Error(`YouTube refused the upload: ${await googleReason(start)}`); }
+    if (!start.ok) { await obj.body.cancel().catch(() => {}); throw new Error(`YouTube hat den Upload abgelehnt: ${await googleReason(start)}`); }
     const location = start.headers.get('Location');
-    if (!location) { await obj.body.cancel().catch(() => {}); throw new Error('YouTube did not give an upload address.'); }
+    if (!location) { await obj.body.cancel().catch(() => {}); throw new Error('YouTube hat keine Upload-Adresse geliefert.'); }
     const { readable, writable } = new FixedLengthStream(obj.size);
     const [put] = await Promise.all([fetch(location, { method: 'PUT', headers: { 'Content-Type': 'video/mp4' }, body: readable }), obj.body.pipeTo(writable)]);
-    if (!put.ok) throw new Error(`Uploading to YouTube failed: ${await googleReason(put)}`);
+    if (!put.ok) throw new Error(`Der Upload zu YouTube ist fehlgeschlagen: ${await googleReason(put)}`);
     const video = await put.json();
     return { id: video.id, url: `https://www.youtube.com/watch?v=${video.id}` };
   }
@@ -466,15 +466,15 @@ export function workflowEngine({ call, publish, publishStatus, refresh, GRAPH, T
         .bind(...keys.map((k) => fields[k]), now(), job.id).run();
     };
     try {
-      if (!job.acc_platform) throw new Error('This account is no longer connected for real.');
+      if (!job.acc_platform) throw new Error('Dieses Konto ist nicht mehr verbunden.');
       const platform = job.acc_platform;
-      if (!DESTINATIONS.includes(platform)) throw new Error(`Workflows can't post to ${platform} yet.`);
+      if (!DESTINATIONS.includes(platform)) throw new Error(`Workflows können noch nicht auf ${platform} posten.`);
       const token = await freshToken(env, job);
       let options = {};
       try { options = JSON.parse(job.options || '{}') || {}; } catch { /* keep defaults */ }
       let res;
       if (job.status === 'processing') {
-        if (job.attempts >= MAX_STATUS_CHECKS) throw new Error(`${platform} was still processing the video after 20 minutes. Check the account itself.`);
+        if (job.attempts >= MAX_STATUS_CHECKS) throw new Error('Die Verarbeitung des Videos dauert schon über 20 Minuten. Schau direkt im Konto nach.');
         res = await publishStatus({ platform, access_token: token, account_id: job.remote_id, container_id: job.container_id });
       } else {
         const key = await ensureCopy(env, job);
@@ -516,7 +516,7 @@ export function workflowEngine({ call, publish, publishStatus, refresh, GRAPH, T
 
   async function runNow(userId, id, env) {
     const w = await db(env).prepare('SELECT * FROM workflows WHERE user_id = ? AND id = ?').bind(userId, id).first();
-    if (!w) throw new HttpError(404, 'This workflow is not on the server yet.');
+    if (!w) throw new HttpError(404, 'Dieser Workflow ist noch nicht auf dem Server.');
     const found = await pollWorkflow(env, w, { manual: true });
     return { found, processed: await processDue(env, userId) };
   }
@@ -526,7 +526,7 @@ export function workflowEngine({ call, publish, publishStatus, refresh, GRAPH, T
     const D = db(env);
     const src = body?.source || {};
     const deliveries = (Array.isArray(body?.deliveries) ? body.deliveries : []).filter((d) => d?.account_id).slice(0, 15);
-    if (!deliveries.length) throw new Error('Choose at least one account.');
+    if (!deliveries.length) throw new Error('Wähle mindestens ein Konto aus.');
     const accounts = new Map((await D.prepare('SELECT id, platform FROM accounts WHERE user_id = ?').bind(userId).all()).results.map((a) => [a.id, a.platform]));
     const itemId = newId();
     const t = now();
@@ -535,21 +535,21 @@ export function workflowEngine({ call, publish, publishStatus, refresh, GRAPH, T
     const stmts = [];
     if (src.type === 'inbox') {
       const row = await D.prepare('SELECT r2_key FROM inbox WHERE user_id = ? AND id = ?').bind(userId, String(src.id || '')).first();
-      if (!row || !await env.MEDIA.head(row.r2_key)) throw new Error('This video is no longer in your inbox.');
+      if (!row || !await env.MEDIA.head(row.r2_key)) throw new Error('Dieses Video ist nicht mehr in deinem Eingang.');
       // The post takes over the file; it leaves the inbox.
       stmts.push(D.prepare('DELETE FROM inbox WHERE user_id = ? AND id = ?').bind(userId, String(src.id)));
       const thumb = typeof src.thumbnail_url === 'string' && src.thumbnail_url.length < 40_000 && /^data:image\/jpeg;base64,[\w+/=]+$/.test(src.thumbnail_url) ? src.thumbnail_url : null;
       item = { kind: 'upload', media: itemId, r2: row.r2_key, copied: t, account: null, permalink: null, thumb };
     } else if (src.type === 'upload') {
-      if (!/^(sched|tmp|inbox)\/[\w.-]+$/.test(src.key || '') || !await env.MEDIA.head(src.key)) throw new Error('The uploaded video was not found – upload it again.');
+      if (!/^(sched|tmp|inbox)\/[\w.-]+$/.test(src.key || '') || !await env.MEDIA.head(src.key)) throw new Error('Das hochgeladene Video wurde nicht gefunden – lade es noch einmal hoch.');
       // A small JPEG frame from the site, for the content list.
       const thumb = typeof src.thumbnail_url === 'string' && src.thumbnail_url.length < 40_000 && /^data:image\/jpeg;base64,[\w+/=]+$/.test(src.thumbnail_url) ? src.thumbnail_url : null;
       item = { kind: 'upload', media: itemId, r2: src.key, copied: t, account: null, permalink: null, thumb };
     } else if (src.type === 'instagram') {
-      if (accounts.get(src.account_id) !== 'instagram' || !/^\w{1,40}$/.test(String(src.media_id || ''))) throw new Error('Pick a video from a connected Instagram account.');
+      if (accounts.get(src.account_id) !== 'instagram' || !/^\w{1,40}$/.test(String(src.media_id || ''))) throw new Error('Wähle ein Video von einem verbundenen Instagram-Konto aus.');
       const https = (v) => (typeof v === 'string' && /^https:\/\/[^\s"'<>]+$/.test(v) ? v.slice(0, 2000) : null);
       item = { kind: 'instagram', media: String(src.media_id), r2: null, copied: null, account: src.account_id, permalink: https(src.permalink), thumb: https(src.thumbnail_url) };
-    } else throw new Error('Add a video first.');
+    } else throw new Error('Füge zuerst ein Video hinzu.');
 
     stmts.push(D.prepare(`INSERT INTO items (id, user_id, workflow_id, kind, source_media_id, source_account_id, title, caption, permalink, thumbnail_url, r2_key, copied_at, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
@@ -558,9 +558,9 @@ export function workflowEngine({ call, publish, publishStatus, refresh, GRAPH, T
       const platform = accounts.get(d.account_id) || 'unknown';
       let status = body.draft ? 'draft' : 'scheduled';
       let error = null;
-      if (!accounts.has(d.account_id)) { status = 'failed'; error = 'This account is only connected as a demo. Connect it for real, then retry.'; }
-      else if (!DESTINATIONS.includes(platform)) { status = 'failed'; error = `Can't post to ${platform} from the server yet.`; }
-      else if (item.kind === 'instagram' && d.account_id === item.account) { status = 'failed'; error = 'This video is already on this Instagram account.'; }
+      if (!accounts.has(d.account_id)) { status = 'failed'; error = 'Dieses Konto ist nur als Demo verbunden. Verbinde es live und versuch es dann noch einmal.'; }
+      else if (!DESTINATIONS.includes(platform)) { status = 'failed'; error = `Der Server kann noch nicht auf ${platform} posten.`; }
+      else if (item.kind === 'instagram' && d.account_id === item.account) { status = 'failed'; error = 'Dieses Video ist schon auf diesem Instagram-Konto.'; }
       stmts.push(D.prepare('INSERT INTO jobs (id, user_id, item_id, account_id, platform, caption, status, scheduled_at, error, options, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
         .bind(newId(), userId, itemId, d.account_id, platform, fitCaption(String(d.caption ?? body.caption ?? ''), platform), status, at, error, JSON.stringify(cleanOptions(platform, d.options)), t));
     }
@@ -572,7 +572,7 @@ export function workflowEngine({ call, publish, publishStatus, refresh, GRAPH, T
   async function listInstagramMedia(userId, url, env) {
     const D = db(env);
     const acc = await D.prepare('SELECT platform, remote_id, access_token FROM accounts WHERE user_id = ? AND id = ?').bind(userId, url.searchParams.get('account') || '').first();
-    if (!acc || acc.platform !== 'instagram') throw new HttpError(404, 'This Instagram account is not connected on the server yet – reload the page.');
+    if (!acc || acc.platform !== 'instagram') throw new HttpError(404, 'Dieses Instagram-Konto ist auf dem Server noch nicht verbunden – lade die Seite neu.');
     const after = url.searchParams.get('after');
     const token = encodeURIComponent(await unseal(env, acc.access_token));
     const page = await call(`${GRAPH}/${acc.remote_id}/media?fields=id,caption,media_type,media_product_type,thumbnail_url,permalink,timestamp,media_url&limit=24${after ? `&after=${encodeURIComponent(after)}` : ''}&access_token=${token}`);
@@ -592,7 +592,7 @@ export function workflowEngine({ call, publish, publishStatus, refresh, GRAPH, T
   async function itemAction(userId, itemId, action, env) {
     const D = db(env);
     const item = await D.prepare('SELECT id, r2_key FROM items WHERE user_id = ? AND id = ?').bind(userId, itemId).first();
-    if (!item) throw new HttpError(404, 'Not found');
+    if (!item) throw new HttpError(404, 'Nicht gefunden');
     const t = now();
     if (action === 'approve') {
       const r = await D.prepare("UPDATE jobs SET status = 'scheduled', scheduled_at = MAX(scheduled_at, ?), updated_at = ? WHERE user_id = ? AND item_id = ? AND status = 'draft'").bind(t, t, userId, itemId).run();
@@ -632,7 +632,7 @@ export function workflowEngine({ call, publish, publishStatus, refresh, GRAPH, T
     if (m === 'POST' && r) return runNow(userId, r[1], env);
     r = /^\/api\/items\/([\w-]{1,64})(?:\/(approve|retry))?$/.exec(p);
     if (r && ((m === 'POST' && r[2]) || (m === 'DELETE' && !r[2]))) return itemAction(userId, r[1], r[2] || 'delete', env);
-    throw new HttpError(404, 'Not found');
+    throw new HttpError(404, 'Nicht gefunden');
   }
 
   /** Cron: check the sources that waited longest, then publish what is due. */
