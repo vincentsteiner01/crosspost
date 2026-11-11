@@ -61,3 +61,5 @@ button { cursor: pointer; }
 .text-page p { color: var(--muted); line-height: 1.6; }
 .text-back { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); font-size: 14px; }
 .text-back svg { width: 18px; height: 18px; }
+.pink-link { color: var(--pink); }
+.pink-link:hover { text-decoration: underline; }

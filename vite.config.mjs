@@ -2,8 +2,7 @@ import { defineConfig } from 'vite';
 import { resolve } from 'node:path';
 
 const pages = [
-  'index.html', 'login/index.html', 'signup/index.html', 'forgot/index.html', 'privacy/index.html', 'terms/index.html',
-  'loginWithGoogle/index.html', 'loginWithYoutube/index.html', 'signupWithFacebook/index.html', 'signinWithAmazon/index.html',
+  'index.html', 'login/index.html', 'signup/index.html', 'privacy/index.html', 'terms/index.html',
   'dashboard/index.html', 'oauth/callback/index.html',
 ];
 

@@ -12,16 +12,10 @@ import { url } from '../lib/paths';
 import { forgetAllVideos, forgetVideo, keepVideo, keptVideo, keptVideosUsage } from '../lib/videos';
 import { itemAction, listInstagramVideos, planServerPost, runServerWorkflow, runsOnServer, scheduleSync, serverHeartbeat, serverWorkflowState, syncNow, uploadForLater, type InstagramVideo, type PostSource } from '../lib/server';
 
-const user = store.currentUser();
-if (!user) location.replace(url('login/'));
 
 const root = document.getElementById('app')!;
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 
-// Provider buttons that have their own sign-in page; others connect in a dialog.
-const PROVIDER_PAGE: Partial<Record<PlatformId, string>> = {
-  youtube: url('loginWithYoutube/'), facebook: url('signupWithFacebook/'), amazon: url('signinWithAmazon/'),
-};
 const isOAuth = (id: PlatformId): id is OAuthPlatform => (OAUTH_PLATFORMS as string[]).includes(id);
 
 // ---------- formatting ----------
@@ -181,8 +175,7 @@ function shell(title: string, body: string, route: string) {
     <a class="brand" href="#/">${icons.logoMark}<span>Crosspost</span></a>
     <nav class="nav">${NAV.map((n) => `<a href="${n.href}" class="${route === n.href ? 'active' : ''}">${n.icon}<span>${n.label}</span>${n.href === '#/posts' && pending ? `<span class="count">${pending}</span>` : ''}</a>`).join('')}</nav>
     <div class="side-foot">
-      <div class="me"><div class="avatar">${esc((u.name || u.email)[0]!.toUpperCase())}</div><div class="me-text"><b>${esc(u.name || 'You')}</b><small>${esc(u.email)}</small></div></div>
-      <button class="logout" data-action="logout">${icons.logout}Log out</button>
+      <a class="me" href="#/settings"><div class="avatar">${esc((u.name || 'C')[0]!.toUpperCase())}</div><div class="me-text"><b>${esc(u.name || 'Your Crosspost')}</b><small>${u.email === store.LOCAL_EMAIL ? 'Settings' : esc(u.email)}</small></div></a>
     </div>
   </aside>
   <div class="scrim" data-action="close-menu"></div>
@@ -814,7 +807,6 @@ function viewSettings() {
       <form class="card stack" id="settings-form">
         <h2>Profile</h2>
         <div><label class="field-label" for="s-name">Name</label><input class="input" id="s-name" value="${esc(u.name)}"></div>
-        <div><label class="field-label" for="s-email">Email</label><input class="input" id="s-email" value="${esc(u.email)}" disabled><div class="hint">Signed in with ${esc(u.method)}.</div></div>
         <div><label class="field-label" for="s-tz">Time zone</label><select class="select" id="s-tz">${zones.map((z) => `<option ${z === u.timezone ? 'selected' : ''}>${z}</option>`).join('')}</select></div>
         <div class="row" style="justify-content:flex-end"><button class="btn primary" type="submit">Save changes</button></div>
       </form>
@@ -834,7 +826,6 @@ function viewSettings() {
 
 // ---------- router ----------
 function render() {
-  if (!store.currentUser()) { location.replace(url('login/')); return; }
   const [path, query] = (location.hash.slice(1) || '/').split('?');
   const params = new URLSearchParams(query);
   const views: Record<string, () => string> = {
@@ -937,10 +928,8 @@ function updateWarnings() {
 
 function connectDialog(id: PlatformId) {
   const p = platform(id);
-  const page = PROVIDER_PAGE[id];
   modal(`<h3>${badge(id, 30)}Connect ${p.name}</h3><p>${p.hint} Enter the account name you want to connect.</p>
     <label class="field-label" for="m-handle">Account name</label><input class="input" id="m-handle" placeholder="@yourname">
-    ${page ? `<p class="hint" style="margin-top:10px">Or use the <a href="${page}">${p.name} sign-in page</a>.</p>` : ''}
     <div class="row"><button class="btn" data-x>Cancel</button><button class="btn primary" data-ok>Connect</button></div>`, (el, close) => {
     const input = el.querySelector<HTMLInputElement>('#m-handle')!;
     input.focus();
@@ -970,7 +959,6 @@ root.addEventListener('click', (e) => {
   switch (action) {
     case 'menu': root.querySelector('.shell')!.classList.add('open'); break;
     case 'close-menu': root.querySelector('.shell')!.classList.remove('open'); break;
-    case 'logout': store.signOut(); location.href = url('login/'); break;
     case 'pick-media': root.querySelector<HTMLInputElement>('#media-input')!.click(); break;
     case 'clear-media': if (draft) { if (draft.mediaUrl) URL.revokeObjectURL(draft.mediaUrl); Object.assign(draft, { file: undefined, mediaUrl: undefined, mediaName: '', mediaType: '', mediaSize: 0, thumb: undefined, ig: undefined }); render(); } break;
     case 'pick-ig': instagramPicker(); break;

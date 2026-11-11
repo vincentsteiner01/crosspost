@@ -158,3 +158,17 @@ export function setRemotePosts(list: Post[]) {
 export const allPosts = () => [...remote, ...posts()].sort((a, b) => b.createdAt - a.createdAt);
 
 export const commit = save;
+
+/**
+ * There is no sign-in: this browser has one profile. From the former sign-in,
+ * the first profile with connected accounts or posts is used, so nothing is lost.
+ */
+function ensureProfile() {
+  if (db.session && findUser(db.session)) return;
+  const has = (u: User) => !!(db.accounts[u.email.toLowerCase()]?.length || db.posts[u.email.toLowerCase()]?.length || db.workflows[u.email.toLowerCase()]?.length);
+  const u = db.users.find(has) ?? db.users[0] ?? createUser({ name: '', email: LOCAL_EMAIL, method: 'local' });
+  db.session = u.email.toLowerCase();
+  save();
+}
+export const LOCAL_EMAIL = 'me@crosspost.local';
+ensureProfile();
