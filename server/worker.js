@@ -124,7 +124,9 @@ async function exchange({ platform, code, redirect_uri, code_verifier }, env) {
     if (!accounts.length) {
       // Only what Meta said about the token (no token itself), to see where the account went.
       console.log(JSON.stringify({ event: 'instagram_no_account', diag }));
-      throw new Error('Meta did not share an Instagram account. Connect again and select your Instagram professional account.');
+      // Typical cause: the account was shared with Crosspost before. Meta then marks it
+      // "Zuvor geteilt" and keeps it with the earlier system user, not the new one.
+      throw new Error('Meta did not share an Instagram account with this sign-in. If the account was connected before: in Meta Business Suite open Settings → Connected apps → Crosspost, remove the app, then connect Instagram again and select your account.');
     }
     console.log(JSON.stringify({ event: 'instagram_connected', via, accounts }));
     return { access_token: token, expires_in, account_id: accounts[0].id, name: accounts[0].username, accounts: accounts.map((a) => ({ id: a.id, name: a.username })) };
