@@ -261,6 +261,8 @@ async function publish({ platform, access_token, account_id, title, caption, vid
     const auth = { Authorization: `Bearer ${access_token}`, 'Content-Type': 'application/json; charset=UTF-8' };
     const creator = await call(`${TIKTOK}/post/publish/creator_info/query/`, { method: 'POST', headers: auth });
     const options = creator.data?.privacy_level_options || ['SELF_ONLY'];
+    // A public account offers PUBLIC_TO_EVERYONE; unaudited apps may only post to private accounts.
+    console.log(JSON.stringify({ event: 'tiktok_creator', privacy_level_options: options, max_video_post_duration_sec: creator.data?.max_video_post_duration_sec }));
     const wanted = env.TIKTOK_PRIVACY || 'SELF_ONLY';
     const privacy_level = options.includes(wanted) ? wanted : options[0];
     const init = await call(`${TIKTOK}/post/publish/video/init/`, {
