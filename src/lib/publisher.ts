@@ -147,6 +147,7 @@ export async function publishReal(acc: Account, post: Post, caption: string, onP
     title: post.title,
     caption,
     video_url: videoUrl,
+    options: { trial: post.instagram?.trial || undefined, tiktok_mode: post.tiktok?.mode },
   });
   // Instagram and TikTok fetch and process the video first (often a minute or more).
   // Ask again in short requests – one long request gets cut off along the way.

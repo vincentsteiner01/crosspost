@@ -7,9 +7,9 @@ import type { Account, Delivery, Post, Workflow } from '../lib/store';
 import { OAUTH_PLATFORMS, integrations, isConfigured, saveIntegrations, type Integrations, type OAuthPlatform } from '../lib/config';
 import { redirectUri, startOAuth } from '../lib/oauth';
 import { canHandOver, handOverToYouTube, publishReal, rememberFile } from '../lib/publisher';
-import { defaultYouTubeOptions, type YouTubeOptions } from '../lib/store';
+import { defaultYouTubeOptions, type InstagramOptions, type TikTokOptions, type YouTubeOptions } from '../lib/store';
 import { url } from '../lib/paths';
-import { itemAction, runServerWorkflow, runsOnServer, scheduleSync, serverHeartbeat, serverWorkflowState, syncNow } from '../lib/server';
+import { itemAction, listInstagramVideos, planServerPost, runServerWorkflow, runsOnServer, scheduleSync, serverHeartbeat, serverWorkflowState, syncNow, uploadForLater, type InstagramVideo, type PostSource } from '../lib/server';
 
 const user = store.currentUser();
 if (!user) location.replace(url('login/'));
@@ -260,21 +260,25 @@ function viewDashboard() {
 }
 
 // Composer state survives re-renders while the person is on the page.
-interface Draft { yt: YouTubeOptions; id: string; title: string; caption: string; file?: File; mediaUrl?: string; mediaName: string; mediaType: string; mediaSize: number; thumb?: string; selected: Set<string>; overrides: Record<string, string>; open: Set<string>; when: 'now' | 'later'; at: number }
+interface Draft {
+  yt: YouTubeOptions; insta: InstagramOptions; tt: TikTokOptions;
+  /** A video already on Instagram, cross-posted through the server instead of a file. */
+  ig?: { accountId: string; mediaId: string; permalink?: string };
+  id: string; title: string; caption: string; file?: File; mediaUrl?: string; mediaName: string; mediaType: string; mediaSize: number; thumb?: string; selected: Set<string>; overrides: Record<string, string>; open: Set<string>; when: 'now' | 'later'; at: number }
 let draft: Draft | null = null;
 
 function newDraft(editId?: string): Draft {
   const p = editId ? store.posts().find((x) => x.id === editId) : undefined;
   if (p) {
     return {
-      yt: { ...defaultYouTubeOptions(), ...p.youtube },
+      yt: { ...defaultYouTubeOptions(), ...p.youtube }, insta: { trial: p.instagram?.trial ?? '' }, tt: { mode: p.tiktok?.mode ?? 'inbox' },
       id: p.id, title: p.title, caption: p.caption, mediaName: p.mediaName, mediaType: p.mediaType, mediaSize: p.mediaSize, thumb: p.thumb,
       selected: new Set(p.deliveries.map((d) => d.accountId)),
       overrides: Object.fromEntries(p.deliveries.filter((d) => d.caption !== p.caption).map((d) => [d.accountId, d.caption])),
       open: new Set(), when: p.scheduledAt > Date.now() + 60000 ? 'later' : 'now', at: Math.max(p.scheduledAt, Date.now() + 3600000),
     };
   }
-  return { yt: defaultYouTubeOptions(), id: store.uid(), title: '', caption: '', mediaName: '', mediaType: '', mediaSize: 0, selected: new Set(store.accounts().filter((a) => platform(a.platform).destination).map((a) => a.id)), overrides: {}, open: new Set(), when: 'now', at: Date.now() + 3600000 };
+  return { yt: defaultYouTubeOptions(), insta: { trial: '' }, tt: { mode: 'inbox' }, id: store.uid(), title: '', caption: '', mediaName: '', mediaType: '', mediaSize: 0, selected: new Set(store.accounts().filter((a) => platform(a.platform).destination).map((a) => a.id)), overrides: {}, open: new Set(), when: 'now', at: Date.now() + 3600000 };
 }
 
 function viewCreate(params: URLSearchParams) {
@@ -282,9 +286,10 @@ function viewCreate(params: URLSearchParams) {
   if (!draft || (editId && draft.id !== editId) || (!editId && store.posts().some((p) => p.id === draft!.id))) draft = newDraft(editId);
   const d = draft;
   const dests = store.accounts().filter((a) => platform(a.platform).destination);
+  const ig = liveInstagram();
   const media = d.mediaName
-    ? `<div class="media-chosen"><div class="thumb">${d.thumb ? `<img src="${d.thumb}" alt="">` : icons.play}</div><div class="post-main"><b>${esc(d.mediaName)}</b><small>${esc(d.mediaType || 'file')} · ${fmtSize(d.mediaSize)}</small></div><button class="btn small" data-action="pick-media">Replace</button><button class="icon-btn" data-action="clear-media" aria-label="Remove">${icons.trash}</button></div>`
-    : `<label class="drop" id="drop">${icons.upload}<b>Drop a video or picture here</b><span>or click to choose a file · MP4, MOV, JPG, PNG</span></label>`;
+    ? `<div class="media-chosen"><div class="thumb">${d.thumb ? `<img src="${esc(d.thumb)}" alt="">` : icons.play}</div><div class="post-main"><b>${esc(d.mediaName)}</b><small>${d.ig ? `From Instagram${d.ig.permalink ? ` · <a href="${esc(d.ig.permalink)}" target="_blank" rel="noopener">open</a>` : ''}` : `${esc(d.mediaType || 'file')} · ${fmtSize(d.mediaSize)}`}</small></div><button class="btn small" data-action="${d.ig ? 'pick-ig' : 'pick-media'}">Replace</button><button class="icon-btn" data-action="clear-media" aria-label="Remove">${icons.trash}</button></div>`
+    : `<label class="drop" id="drop">${icons.upload}<b>Drop a video or picture here</b><span>or click to choose a file · MP4, MOV, JPG, PNG</span></label>${ig ? `<button class="btn small" data-action="pick-ig" style="margin-top:10px">${badge('instagram', 18)}Use a video already on Instagram</button>` : ''}`;
   return shell(editId ? 'Edit post' : 'Create post', `
     <div class="composer">
       <div class="stack">
@@ -297,7 +302,7 @@ function viewCreate(params: URLSearchParams) {
           <div class="section-head"><div><h2>Publish to</h2><p class="sub" style="margin:0">${d.selected.size} of ${dests.length} accounts selected</p></div><a class="btn small" href="#/accounts">${icons.plus}Connect account</a></div>
           ${dests.length ? `<div class="dest-list">${dests.map((a) => destRow(a, d)).join('')}</div>` : `<div class="empty"><b>No destinations connected</b>Connect TikTok, Instagram, YouTube and more to publish there.<br><a class="btn primary" href="#/accounts">Connect accounts</a></div>`}
         </section>
-        ${youtubeCard(d)}
+        ${youtubeCard(d)}${instagramCard(d)}${tiktokCard(d)}
         <section class="card">
           <h2>When</h2>
           <p class="sub">Times are in ${esc(store.currentUser()!.timezone)}.</p>
@@ -329,8 +334,81 @@ function youtubeCard(d: Draft) {
     <div><label class="field-label" for="yt-tags">Tags</label><input class="input" id="yt-tags" placeholder="reels, tutorial, behind the scenes" value="${esc(o.tags)}"><div class="hint">Separated by commas, 500 characters in total.</div></div>
     <label class="check-row"><input type="checkbox" id="yt-short" ${o.short ? 'checked' : ''}><span><b>Publish as Short</b><small>Adds #Shorts to the title. Vertical videos up to 3 minutes appear in the Shorts feed.</small></span></label>
     <label class="check-row"><input type="checkbox" id="yt-kids" ${o.madeForKids ? 'checked' : ''}><span><b>Made for kids</b><small>YouTube requires this answer by law (COPPA). Comments and some features are turned off for kids' videos.</small></span></label>
-    ${live ? `<label class="check-row"><input type="checkbox" id="yt-schedule" ${o.platformSchedule ? 'checked' : ''}><span><b>Let YouTube publish scheduled posts</b><small>Uploads right away as private and YouTube makes it public at the planned time, even if this app is closed. Needs at least 15 minutes ahead and visibility “Public”.</small></span></label>` : ''}
+    ${live && !integrations().serverUrl ? `<label class="check-row"><input type="checkbox" id="yt-schedule" ${o.platformSchedule ? 'checked' : ''}><span><b>Let YouTube publish scheduled posts</b><small>Uploads right away as private and YouTube makes it public at the planned time, even if this app is closed. Needs at least 15 minutes ahead and visibility “Public”.</small></span></label>` : ''}
   </section>`;
+}
+
+/** Instagram's own options; shown while an Instagram account connected for real is selected. */
+function instagramCard(d: Draft) {
+  if (![...d.selected].some((id) => { const a = store.account(id); return a?.platform === 'instagram' && a.auth; })) return '';
+  const t = d.insta.trial;
+  return `<section class="card stack" id="ig-card">
+    <div><h2>${badge('instagram', 22)} Instagram</h2><p class="sub" style="margin:0">Posted as a Reel.</p></div>
+    <label class="check-row"><input type="checkbox" id="ig-trial" ${t ? 'checked' : ''}><span><b>Share as trial reel (Test-Reel)</b><small>Instagram first shows it to people who don't follow you. Good for trying an idea before your followers see it.</small></span></label>
+    ${t ? `<div><label class="field-label" for="ig-grad">Share it with your followers</label><select class="select" id="ig-grad"><option value="MANUAL" ${t === 'MANUAL' ? 'selected' : ''}>Myself, later in the Instagram app</option><option value="SS_PERFORMANCE" ${t === 'SS_PERFORMANCE' ? 'selected' : ''}>Automatically, when it performs well</option></select></div>` : ''}
+  </section>`;
+}
+
+/** How the video reaches TikTok; shown while a TikTok account connected for real is selected. */
+function tiktokCard(d: Draft) {
+  if (![...d.selected].some((id) => { const a = store.account(id); return a?.platform === 'tiktok' && a.auth; })) return '';
+  const radio = (v: TikTokOptions['mode'], title: string, text: string) => `<label class="check-row"><input type="radio" name="tt-mode" value="${v}" ${d.tt.mode === v ? 'checked' : ''}><span><b>${title}</b><small>${text}</small></span></label>`;
+  return `<section class="card stack" id="tt-card">
+    <div><h2>${badge('tiktok', 22)} TikTok</h2></div>
+    ${radio('inbox', 'Send to the TikTok app as a draft', 'The video waits in your TikTok inbox; add sound and text there and post it yourself.')}
+    ${radio('direct', 'Post directly', 'Until TikTok has reviewed this app, direct posts are only visible to you and your account has to be private.')}
+  </section>`;
+}
+
+const liveInstagram = () => (integrations().serverUrl ? store.accounts().find((a) => a.platform === 'instagram' && a.auth) : undefined);
+
+function instagramPicker() {
+  const acc = liveInstagram();
+  if (!acc) { toast('Connect Instagram first'); return; }
+  modal(`<h3>${badge('instagram', 26)}Videos on @${esc(acc.handle)}</h3><p>Newest first. Instagram doesn't release videos with licensed music for download – upload the original file for those.</p><div class="ig-grid" id="ig-grid"><p class="hint">Loading…</p></div><div class="row"><button class="btn" data-more hidden>Load more</button><button class="btn" data-x>Close</button></div>`, (el, close) => {
+    el.classList.add('wide');
+    const grid = el.querySelector<HTMLElement>('#ig-grid')!;
+    const more = el.querySelector<HTMLButtonElement>('[data-more]')!;
+    let list: InstagramVideo[] = [];
+    let next: string | null = null;
+    const day = (t: number | null) => (t ? new Date(t).toLocaleDateString(undefined, { day: '2-digit', month: 'short', year: 'numeric' }) : '');
+    const tile = (v: InstagramVideo) => `<button type="button" class="ig-tile" data-ig="${esc(v.id)}" ${v.downloadable ? '' : 'disabled'} title="${esc(v.caption.slice(0, 200))}">${v.thumbnail_url ? `<img src="${esc(v.thumbnail_url)}" alt="" loading="lazy">` : ''}<span class="ig-meta">${day(v.timestamp)}${v.crossposted ? '<br>Cross-posted before' : ''}${v.downloadable ? '' : '<br>Licensed music – no download'}</span></button>`;
+    const load = async (after?: string) => {
+      more.disabled = true;
+      try {
+        const r = await listInstagramVideos(acc.id, after);
+        list = after ? [...list, ...r.videos] : r.videos;
+        next = r.next;
+        grid.innerHTML = list.length ? list.map(tile).join('') : '<p class="hint">No videos on this account yet.</p>';
+        more.hidden = !next;
+      } catch (e) {
+        grid.innerHTML = `<p class="hint">${esc((e as Error).message)}</p>`;
+      }
+      more.disabled = false;
+    };
+    grid.addEventListener('click', (e) => {
+      const b = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-ig]');
+      const v = b && !b.disabled ? list.find((x) => x.id === b.dataset.ig) : undefined;
+      if (!v) return;
+      close();
+      pickInstagram(acc, v);
+    });
+    more.addEventListener('click', () => { if (next) load(next); });
+    el.querySelector('[data-x]')!.addEventListener('click', close);
+    load();
+  });
+}
+
+function pickInstagram(acc: Account, v: InstagramVideo) {
+  const d = draft!;
+  syncDraftFromForm(d);
+  if (d.mediaUrl) URL.revokeObjectURL(d.mediaUrl);
+  Object.assign(d, { file: undefined, mediaUrl: undefined, mediaName: 'Instagram video', mediaType: 'video/mp4', mediaSize: 0, thumb: v.thumbnail_url ?? undefined, ig: { accountId: acc.id, mediaId: v.id, permalink: v.permalink ?? undefined } });
+  if (!d.caption.trim()) d.caption = v.caption;
+  if (!d.title.trim()) d.title = (v.caption.split('\n').map((x) => x.trim()).find(Boolean) ?? '').slice(0, 100);
+  // It is already on this Instagram account.
+  d.selected.delete(acc.id);
+  render();
 }
 
 function destRow(a: Account, d: Draft) {
@@ -356,6 +434,10 @@ function syncDraftFromForm(d: Draft) {
   if (c) d.caption = c.value;
   if (at?.value) d.at = new Date(at.value).getTime();
   root.querySelectorAll<HTMLTextAreaElement>('[data-override]').forEach((o) => { d.overrides[o.dataset.override!] = o.value; });
+  const igTrial = root.querySelector<HTMLInputElement>('#ig-trial');
+  if (igTrial) d.insta.trial = igTrial.checked ? ((root.querySelector<HTMLSelectElement>('#ig-grad')?.value as InstagramOptions['trial']) || 'MANUAL') : '';
+  const ttMode = root.querySelector<HTMLInputElement>('input[name=tt-mode]:checked');
+  if (ttMode) d.tt.mode = ttMode.value as TikTokOptions['mode'];
   const yt = root.querySelector('#yt-card');
   if (yt) {
     d.yt.privacy = root.querySelector<HTMLSelectElement>('#yt-privacy')!.value as YouTubeOptions['privacy'];
@@ -386,20 +468,68 @@ function savePostFromDraft(publish: boolean, force = false) {
       return;
     }
   }
+  // Planned posts and videos from Instagram go through the server: it publishes on time, also while this page is closed.
+  const live = [...d.selected].filter((id) => !!store.account(id)?.auth);
+  const viaServer = !!integrations().serverUrl && live.length > 0 && (!!d.ig || (publish && d.when === 'later' && d.mediaType.startsWith('video')));
+  if (d.ig && !viaServer) { toast('Choose at least one account connected for real'); return; }
+  if (viaServer) { submitViaServer(d, at, publish, live); return; }
+  saveLocalPost(d, at, publish, [...d.selected]);
+  draft = null;
+  processQueue();
+  toast(publish ? (d.when === 'now' ? `Publishing to ${d.selected.size} accounts…` : `Scheduled for ${fmtDate(at)}`) : 'Draft saved');
+  location.hash = '#/posts';
+}
+
+function saveLocalPost(d: Draft, at: number, publish: boolean, ids: string[]) {
+  const has = (p: string) => ids.some((id) => store.account(id)?.platform === p);
   const post: Post = {
     id: d.id, title: d.title.trim() || d.mediaName || d.caption.slice(0, 40) || 'Untitled post', caption: d.caption,
     mediaName: d.mediaName, mediaType: d.mediaType, mediaSize: d.mediaSize, thumb: d.thumb,
     mediaUrl: d.file ? undefined : store.posts().find((p) => p.id === d.id)?.mediaUrl,
-    youtube: [...d.selected].some((id) => store.account(id)?.platform === 'youtube') ? { ...d.yt } : undefined,
+    youtube: has('youtube') ? { ...d.yt } : undefined,
+    instagram: has('instagram') ? { ...d.insta } : undefined,
+    tiktok: has('tiktok') ? { ...d.tt } : undefined,
     createdAt: store.posts().find((p) => p.id === d.id)?.createdAt ?? Date.now(), scheduledAt: at,
-    deliveries: [...d.selected].map((id) => ({ accountId: id, status: publish ? 'scheduled' : 'draft', caption: d.overrides[id] ?? d.caption })),
+    deliveries: ids.map((id) => ({ accountId: id, status: publish ? 'scheduled' : 'draft', caption: d.overrides[id] ?? d.caption })),
   };
   if (d.file) rememberFile(post.id, d.file);
   store.savePost(post);
-  draft = null;
-  processQueue();
-  toast(publish ? (d.when === 'now' ? `Publishing to ${post.deliveries.length} accounts…` : `Scheduled for ${fmtDate(at)}`) : 'Draft saved');
-  location.hash = '#/posts';
+}
+
+/** Per-account settings the server passes on to the platform. */
+function serverOptions(id: string, d: Draft): Record<string, unknown> | undefined {
+  const p = store.account(id)?.platform;
+  if (p === 'youtube') return { ...d.yt, title: d.title.trim() || undefined };
+  if (p === 'instagram') return d.insta.trial ? { trial: d.insta.trial } : undefined;
+  if (p === 'tiktok') return { tiktok_mode: d.tt.mode };
+  return undefined;
+}
+
+async function submitViaServer(d: Draft, at: number, publish: boolean, live: string[]) {
+  const buttons = [...root.querySelectorAll<HTMLButtonElement>('[data-action="publish"], [data-action="save-draft"]')];
+  buttons.forEach((b) => { b.disabled = true; });
+  try {
+    let source: PostSource;
+    if (d.ig) source = { type: 'instagram', account_id: d.ig.accountId, media_id: d.ig.mediaId, permalink: d.ig.permalink, thumbnail_url: d.thumb };
+    else {
+      if (!d.file) throw new Error('Choose the video file again – it is no longer in this browser.');
+      toast('Uploading the video to the server…');
+      source = { type: 'upload', key: await uploadForLater(d.file), thumbnail_url: d.thumb };
+    }
+    await planServerPost({
+      title: d.title.trim(), caption: d.caption, source, scheduled_at: at, draft: !publish,
+      deliveries: live.map((id) => ({ account_id: id, caption: d.overrides[id] ?? d.caption, options: serverOptions(id, d) })),
+    });
+    // Accounts only connected as a demo keep the simulated post.
+    const demo = [...d.selected].filter((id) => !live.includes(id));
+    if (demo.length) { saveLocalPost({ ...d, id: store.uid() }, at, publish, demo); processQueue(); }
+    draft = null;
+    toast(!publish ? 'Saved – approve it under Content when you are ready' : at <= Date.now() + 60_000 ? `Publishing to ${live.length} accounts…` : `Scheduled for ${fmtDate(at)} – the server publishes it, even with this page closed`);
+    location.hash = '#/posts';
+  } catch (e) {
+    toast((e as Error).message);
+    buttons.forEach((b) => { b.disabled = false; });
+  }
 }
 
 // A small frame grab for the content list.
@@ -433,6 +563,7 @@ async function setMedia(file: File) {
   syncDraftFromForm(d);
   if (d.mediaUrl) URL.revokeObjectURL(d.mediaUrl);
   d.file = file;
+  d.ig = undefined;
   d.mediaUrl = URL.createObjectURL(file);
   d.mediaName = file.name; d.mediaType = file.type; d.mediaSize = file.size;
   if (!d.title) d.title = file.name.replace(/\.[^.]+$/, '').replace(/[-_]+/g, ' ');
@@ -623,6 +754,7 @@ function mount(path: string) {
     });
     root.querySelector<HTMLInputElement>('#c-at')?.addEventListener('change', (e) => { const v = (e.target as HTMLInputElement).value; if (v) d.at = new Date(v).getTime(); });
     root.querySelectorAll<HTMLTextAreaElement>('[data-override]').forEach((t) => t.addEventListener('input', () => { d.overrides[t.dataset.override!] = t.value; updateWarnings(); }));
+    root.querySelector<HTMLInputElement>('#ig-trial')?.addEventListener('change', () => { syncDraftFromForm(d); render(); });
   }
   if (path.startsWith('/workflows/')) {
     const form = root.querySelector<HTMLFormElement>('#wf-form')!;
@@ -717,7 +849,8 @@ root.addEventListener('click', (e) => {
     case 'close-menu': root.querySelector('.shell')!.classList.remove('open'); break;
     case 'logout': store.signOut(); location.href = url('login/'); break;
     case 'pick-media': root.querySelector<HTMLInputElement>('#media-input')!.click(); break;
-    case 'clear-media': if (draft) { if (draft.mediaUrl) URL.revokeObjectURL(draft.mediaUrl); Object.assign(draft, { file: undefined, mediaUrl: undefined, mediaName: '', mediaType: '', mediaSize: 0, thumb: undefined }); render(); } break;
+    case 'clear-media': if (draft) { if (draft.mediaUrl) URL.revokeObjectURL(draft.mediaUrl); Object.assign(draft, { file: undefined, mediaUrl: undefined, mediaName: '', mediaType: '', mediaSize: 0, thumb: undefined, ig: undefined }); render(); } break;
+    case 'pick-ig': instagramPicker(); break;
     case 'toggle-dest': if (draft) { syncDraftFromForm(draft); const on = (el as HTMLInputElement).checked; if (on) draft.selected.add(id!); else draft.selected.delete(id!); render(); } break;
     case 'open-override': e.preventDefault(); syncDraftFromForm(draft!); draft!.open.add(id!); render(); break;
     case 'reset-override': e.preventDefault(); delete draft!.overrides[id!]; draft!.open.delete(id!); render(); break;

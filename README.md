@@ -54,7 +54,13 @@ https://DEIN-NAME.github.io/crosspost/oauth/callback/
    ```
    In `wrangler.toml` bei `PUBLIC_URL` die Server-Adresse eintragen (siehe Schritt 5).
 5. `npx wrangler deploy` – die angezeigte Adresse (z. B. `https://crosspost-api.DEIN-NAME.workers.dev`) ist deine **Server-Adresse**.
-6. Optional: im R2-Bucket eine Lebenszyklus-Regel „Objekte nach 1 Tag löschen“ anlegen, damit hochgeladene Videos nicht liegen bleiben.
+6. Lebenszyklus-Regeln im R2-Bucket, damit Videos nicht liegen bleiben (Präfix → Tage):
+   ```
+   npx wrangler r2 bucket lifecycle add crosspost-media tmp-after-1-day tmp/ --expire-days 1
+   npx wrangler r2 bucket lifecycle add crosspost-media wf-after-2-days wf/ --expire-days 2
+   npx wrangler r2 bucket lifecycle add crosspost-media sched-after-60-days sched/ --expire-days 60
+   ```
+   `tmp/` = sofort veröffentlicht, `wf/` = Kopien für Workflows, `sched/` = geplante Posts. Sobald alle Ziele ein Video haben, löscht der Server die Kopie selbst.
 
 ### Workflows auf dem Server
 Workflows mit einer **Instagram-Quelle** laufen auf dem Server (`server/workflows.js`), auch wenn die Seite zu ist:
@@ -63,6 +69,12 @@ Workflows mit einer **Instagram-Quelle** laufen auf dem Server (`server/workflow
 - „Run now“ nimmt das neueste noch nicht verarbeitete Video, auch ein älteres – gut zum Testen.
 - Die Seite übergibt Workflow und die nötigen Anmeldungen (`PUT /api/sync`); der Server speichert sie mit `TOKEN_KEY` verschlüsselt und erneuert abgelaufene Zugänge selbst.
 - Anmeldung am Server: Ein verbundenes Konto (Instagram, YouTube, TikTok oder Facebook) beweist, wer man ist. Uploads (`PUT /media`) gehen nur noch mit dieser Sitzung.
+
+### Geplante Posts und ältere Instagram-Videos
+- **Planen:** Ein Post mit Video und „Schedule“ an echt verbundene Konten geht über den Server (`POST /api/posts`): Die Datei liegt bis zum Termin unter `sched/`, der Cron veröffentlicht pünktlich – auch wenn die Seite zu ist.
+- **Instagram-Videos nachträglich crossposten:** „Use a video already on Instagram“ im Erstellen-Bereich listet die Videos des Kontos (`GET /api/instagram/media`). Instagram gibt Videos mit lizenzierter Musik nicht zum Download frei; für die die Originaldatei hochladen.
+- **Test-Reels (Trial Reels):** Option im Instagram-Block; Instagram zeigt das Reel zuerst Nicht-Followern (`trial_params`, `MANUAL` oder `SS_PERFORMANCE`).
+- **TikTok:** „Als Entwurf in die TikTok-App“ (Inbox, Scope `video.upload`) oder „Direkt posten“. Workflows nutzen `TIKTOK_DEFAULT_MODE` (Standard `inbox`). Direktes Posten ist bis zu TikToks Audit nur privat und nur auf privaten Konten möglich.
 
 ## 3. Entwickler-Apps bei den Plattformen anlegen
 

@@ -6,6 +6,8 @@
 //   PUT    /api/sync                  the site hands over its workflows and the accounts they use
 //   GET    /api/posts                 videos the workflows picked up, with one job per destination
 //   POST   /api/workflows/:id/run     check the source now (takes the newest video if nothing is new)
+//   POST   /api/posts                 plan a post: an uploaded file or an existing Instagram video, to many accounts
+//   GET    /api/instagram/media       the videos on a connected Instagram account (to cross-post older ones)
 //   POST   /api/tick                  move this user's due jobs along
 //   POST   /api/items/:id/approve     publish jobs that wait for approval
 //   POST   /api/items/:id/retry       try failed jobs again
@@ -24,8 +26,27 @@ const MAX_WORKFLOWS_PER_RUN = 8;
 const LEASE_MS = 5 * 60_000;
 const STATUS_EVERY_MS = 30_000;
 const MAX_STATUS_CHECKS = 40;
-// R2 deletes uploads after a day; copy again when the copy is older than this.
+// R2 deletes copies (wf/) after a day or two; copy again when the copy is older than this.
 const COPY_FRESH_MS = 20 * 3600_000;
+
+/** Keep only the per-destination settings we know, with sane values. */
+function cleanOptions(platform, o) {
+  if (!o || typeof o !== 'object') return {};
+  if (platform === 'instagram') return ['MANUAL', 'SS_PERFORMANCE'].includes(o.trial) ? { trial: o.trial } : {};
+  if (platform === 'tiktok') return ['inbox', 'direct'].includes(o.tiktok_mode) ? { tiktok_mode: o.tiktok_mode } : {};
+  if (platform === 'youtube') {
+    return {
+      title: typeof o.title === 'string' ? o.title.slice(0, 100) : undefined,
+      privacy: ['public', 'unlisted', 'private'].includes(o.privacy) ? o.privacy : undefined,
+      categoryId: /^\d{1,3}$/.test(o.categoryId || '') ? o.categoryId : undefined,
+      tags: typeof o.tags === 'string' ? o.tags.slice(0, 500) : undefined,
+      madeForKids: o.madeForKids === true,
+      short: o.short === true,
+    };
+  }
+  return {};
+}
+const LICENSED = 'Instagram does not release this video for download – usually because it uses licensed music. Upload the original file instead.';
 
 export class HttpError extends Error {
   constructor(status, message) { super(message); this.status = status; }
@@ -184,7 +205,7 @@ export function workflowEngine({ call, publish, publishStatus, refresh, GRAPH, T
   // ---------- reading back ----------
   async function listPosts(userId, env) {
     const D = db(env);
-    const items = (await D.prepare('SELECT id, workflow_id, caption, permalink, thumbnail_url, created_at FROM items WHERE user_id = ? ORDER BY created_at DESC LIMIT 50').bind(userId).all()).results;
+    const items = (await D.prepare('SELECT id, kind, workflow_id, title, caption, permalink, thumbnail_url, created_at FROM items WHERE user_id = ? ORDER BY created_at DESC LIMIT 50').bind(userId).all()).results;
     const jobs = items.length
       ? (await D.prepare(`SELECT id, item_id, account_id, platform, status, caption, url, error, scheduled_at, updated_at FROM jobs
           WHERE user_id = ? AND item_id IN (SELECT id FROM items WHERE user_id = ? ORDER BY created_at DESC LIMIT 50)`).bind(userId, userId).all()).results
@@ -222,8 +243,9 @@ export function workflowEngine({ call, publish, publishStatus, refresh, GRAPH, T
       let error = null;
       if (!accounts.has(accountId)) { status = 'failed'; error = 'This account is only connected as a demo. Connect it for real, then retry.'; }
       else if (!DESTINATIONS.includes(platform)) { status = 'failed'; error = `Workflows can't post to ${platform} yet.`; }
-      return D.prepare('INSERT INTO jobs (id, user_id, item_id, account_id, platform, caption, status, scheduled_at, error, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-        .bind(newId(), w.user_id, itemId, accountId, platform, fitCaption(applyTemplate(w, media.caption || ''), platform), status, at, error, now());
+      const options = platform === 'tiktok' ? { tiktok_mode: env.TIKTOK_DEFAULT_MODE === 'direct' ? 'direct' : 'inbox' } : {};
+      return D.prepare('INSERT INTO jobs (id, user_id, item_id, account_id, platform, caption, status, scheduled_at, error, options, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .bind(newId(), w.user_id, itemId, accountId, platform, fitCaption(applyTemplate(w, media.caption || ''), platform), status, at, error, JSON.stringify(options), now());
     });
     if (stmts.length) await D.batch(stmts);
     return 1;
@@ -278,16 +300,22 @@ export function workflowEngine({ call, publish, publishStatus, refresh, GRAPH, T
   /** Our own copy of the video in R2: platforms fetch it from PUBLIC_URL, YouTube gets it uploaded. */
   async function ensureCopy(env, job) {
     const D = db(env);
-    const item = await D.prepare('SELECT id, user_id, workflow_id, source_media_id, r2_key, copied_at FROM items WHERE id = ?').bind(job.item_id).first();
+    const item = await D.prepare('SELECT id, kind, user_id, workflow_id, source_media_id, source_account_id, r2_key, copied_at FROM items WHERE id = ?').bind(job.item_id).first();
     if (!item) throw new Error('The video was deleted.');
+    if (item.kind === 'upload') {
+      if (item.r2_key && await env.MEDIA.head(item.r2_key)) return item.r2_key;
+      throw new Error('The uploaded video is gone – plan the post again with the file.');
+    }
     if (item.r2_key && now() - (item.copied_at || 0) < COPY_FRESH_MS && await env.MEDIA.head(item.r2_key)) return item.r2_key;
     // Ask Instagram for a fresh download address with the source account's sign-in.
-    const src = await D.prepare(`SELECT a.access_token FROM workflows w JOIN accounts a ON a.user_id = w.user_id AND a.id = w.source_id
-      WHERE w.user_id = ? AND w.id = ?`).bind(item.user_id, item.workflow_id).first();
-    if (!src) throw new Error('The workflow or its source account is gone.');
+    const src = item.kind === 'instagram'
+      ? await D.prepare('SELECT access_token FROM accounts WHERE user_id = ? AND id = ?').bind(item.user_id, item.source_account_id).first()
+      : await D.prepare(`SELECT a.access_token FROM workflows w JOIN accounts a ON a.user_id = w.user_id AND a.id = w.source_id
+        WHERE w.user_id = ? AND w.id = ?`).bind(item.user_id, item.workflow_id).first();
+    if (!src) throw new Error(item.kind === 'instagram' ? 'The Instagram account is no longer connected.' : 'The workflow or its source account is gone.');
     const token = await unseal(env, src.access_token);
     const media = await call(`${GRAPH}/${item.source_media_id}?fields=media_url&access_token=${encodeURIComponent(token)}`);
-    if (!media.media_url) throw new Error('Instagram did not give a download address for this video.');
+    if (!media.media_url) throw new Error(LICENSED);
     const res = await fetch(media.media_url);
     if (!res.ok || !res.body) throw new Error(`Downloading the video from Instagram failed (${res.status}).`);
     const key = `wf/${item.id}-${now().toString(36)}.mp4`;
@@ -315,13 +343,16 @@ export function workflowEngine({ call, publish, publishStatus, refresh, GRAPH, T
   }
 
   /** YouTube: resumable upload from our R2 copy. */
-  async function youtubeUpload(env, token, key, caption) {
+  async function youtubeUpload(env, token, key, caption, o = {}, itemTitle = '') {
     const obj = await env.MEDIA.get(key);
     if (!obj) throw new Error('The copy of the video is gone – retry to copy it again.');
     const clean = (s) => s.replace(/[<>]/g, '').replace(/\s+/g, ' ').trim();
+    let title = clean(o.title || itemTitle || firstLine(caption)) || 'Video';
+    if (o.short && !/#shorts/i.test(title)) title = `${title.slice(0, 92)} #Shorts`;
+    const tags = (o.tags || '').split(/[,#]/).map((t) => t.trim()).filter(Boolean);
     const meta = {
-      snippet: { title: (clean(firstLine(caption)) || 'Video').slice(0, 100), description: caption.replace(/[<>]/g, '').slice(0, 5000), categoryId: '22' },
-      status: { privacyStatus: 'public', selfDeclaredMadeForKids: false },
+      snippet: { title: title.slice(0, 100), description: caption.replace(/[<>]/g, '').slice(0, 5000), categoryId: o.categoryId || '22', ...(tags.length ? { tags } : {}) },
+      status: { privacyStatus: o.privacy || 'public', selfDeclaredMadeForKids: !!o.madeForKids },
     };
     const start = await fetch('https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status', {
       method: 'POST',
@@ -338,6 +369,17 @@ export function workflowEngine({ call, publish, publishStatus, refresh, GRAPH, T
     return { id: video.id, url: `https://www.youtube.com/watch?v=${video.id}` };
   }
 
+  /** Every destination has the video: our copy is no longer needed. */
+  async function dropCopyWhenDone(env, itemId) {
+    const D = db(env);
+    const left = await D.prepare("SELECT COUNT(*) AS n FROM jobs WHERE item_id = ? AND status != 'published'").bind(itemId).first();
+    if (left?.n) return;
+    const item = await D.prepare('SELECT r2_key FROM items WHERE id = ?').bind(itemId).first();
+    if (!item?.r2_key) return;
+    await env.MEDIA.delete(item.r2_key).catch(() => {});
+    await D.prepare('UPDATE items SET r2_key = NULL, copied_at = NULL WHERE id = ?').bind(itemId).run();
+  }
+
   async function runJob(env, job) {
     const set = (fields) => {
       const keys = Object.keys(fields);
@@ -349,6 +391,8 @@ export function workflowEngine({ call, publish, publishStatus, refresh, GRAPH, T
       const platform = job.acc_platform;
       if (!DESTINATIONS.includes(platform)) throw new Error(`Workflows can't post to ${platform} yet.`);
       const token = await freshToken(env, job);
+      let options = {};
+      try { options = JSON.parse(job.options || '{}') || {}; } catch { /* keep defaults */ }
       let res;
       if (job.status === 'processing') {
         if (job.attempts >= MAX_STATUS_CHECKS) throw new Error(`${platform} was still processing the video after 20 minutes. Check the account itself.`);
@@ -356,11 +400,14 @@ export function workflowEngine({ call, publish, publishStatus, refresh, GRAPH, T
       } else {
         const key = await ensureCopy(env, job);
         res = platform === 'youtube'
-          ? await youtubeUpload(env, token, key, job.caption || '')
-          : await publish({ platform, access_token: token, account_id: job.remote_id, caption: job.caption || '', title: firstLine(job.caption), video_url: `${publicUrl(env)}/media/${key}` }, env);
+          ? await youtubeUpload(env, token, key, job.caption || '', options, job.item_title || '')
+          : await publish({ platform, access_token: token, account_id: job.remote_id, caption: job.caption || '', title: job.item_title || firstLine(job.caption), video_url: `${publicUrl(env)}/media/${key}`, options }, env);
       }
       if (res.pending) await set({ status: 'processing', container_id: res.container_id || job.container_id, scheduled_at: now() + STATUS_EVERY_MS, attempts: (job.attempts || 0) + 1 });
-      else await set({ status: 'published', url: res.url || null, error: null });
+      else {
+        await set({ status: 'published', url: res.url || null, error: null });
+        await dropCopyWhenDone(env, job.item_id);
+      }
     } catch (e) {
       const msg = String(e.message || e).slice(0, 500);
       console.log(JSON.stringify({ event: 'job_failed', job: job.id, platform: job.platform, error: msg }));
@@ -372,8 +419,8 @@ export function workflowEngine({ call, publish, publishStatus, refresh, GRAPH, T
   async function processDue(env, userId) {
     const D = db(env);
     const t = now();
-    const due = (await D.prepare(`SELECT j.*, a.platform AS acc_platform, a.remote_id, a.access_token, a.refresh_token, a.expires_at
-      FROM jobs j LEFT JOIN accounts a ON a.user_id = j.user_id AND a.id = j.account_id
+    const due = (await D.prepare(`SELECT j.*, a.platform AS acc_platform, a.remote_id, a.access_token, a.refresh_token, a.expires_at, i.title AS item_title
+      FROM jobs j LEFT JOIN accounts a ON a.user_id = j.user_id AND a.id = j.account_id LEFT JOIN items i ON i.id = j.item_id
       WHERE j.status IN ('scheduled', 'processing') AND j.scheduled_at <= ? AND (j.lease_until IS NULL OR j.lease_until < ?)
       ${userId ? 'AND j.user_id = ?' : ''} ORDER BY j.scheduled_at LIMIT ?`)
       .bind(...(userId ? [t, t, userId, MAX_JOBS_PER_RUN] : [t, t, MAX_JOBS_PER_RUN])).all()).results;
@@ -393,6 +440,66 @@ export function workflowEngine({ call, publish, publishStatus, refresh, GRAPH, T
     if (!w) throw new HttpError(404, 'This workflow is not on the server yet.');
     const found = await pollWorkflow(env, w, { manual: true });
     return { found, processed: await processDue(env, userId) };
+  }
+
+  /** Plan a post: { title, caption, source, scheduled_at, draft, deliveries: [{ account_id, caption, options }] }. */
+  async function createPost(userId, body, env) {
+    const D = db(env);
+    const src = body?.source || {};
+    const deliveries = (Array.isArray(body?.deliveries) ? body.deliveries : []).filter((d) => d?.account_id).slice(0, 15);
+    if (!deliveries.length) throw new Error('Choose at least one account.');
+    const accounts = new Map((await D.prepare('SELECT id, platform FROM accounts WHERE user_id = ?').bind(userId).all()).results.map((a) => [a.id, a.platform]));
+    const itemId = newId();
+    const t = now();
+    const at = Math.max(t, Number(body.scheduled_at) || t);
+    let item;
+    if (src.type === 'upload') {
+      if (!/^(sched|tmp)\/[\w.-]+$/.test(src.key || '') || !await env.MEDIA.head(src.key)) throw new Error('The uploaded video was not found – upload it again.');
+      // A small JPEG frame from the site, for the content list.
+      const thumb = typeof src.thumbnail_url === 'string' && src.thumbnail_url.length < 40_000 && /^data:image\/jpeg;base64,[\w+/=]+$/.test(src.thumbnail_url) ? src.thumbnail_url : null;
+      item = { kind: 'upload', media: itemId, r2: src.key, copied: t, account: null, permalink: null, thumb };
+    } else if (src.type === 'instagram') {
+      if (accounts.get(src.account_id) !== 'instagram' || !/^\w{1,40}$/.test(String(src.media_id || ''))) throw new Error('Pick a video from a connected Instagram account.');
+      const https = (v) => (typeof v === 'string' && /^https:\/\/[^\s"'<>]+$/.test(v) ? v.slice(0, 2000) : null);
+      item = { kind: 'instagram', media: String(src.media_id), r2: null, copied: null, account: src.account_id, permalink: https(src.permalink), thumb: https(src.thumbnail_url) };
+    } else throw new Error('Add a video first.');
+
+    const stmts = [D.prepare(`INSERT INTO items (id, user_id, workflow_id, kind, source_media_id, source_account_id, title, caption, permalink, thumbnail_url, r2_key, copied_at, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(itemId, userId, itemId, item.kind, item.media, item.account, String(body.title || '').slice(0, 200), String(body.caption || '').slice(0, 63206), item.permalink, item.thumb, item.r2, item.copied, t)];
+    for (const d of deliveries) {
+      const platform = accounts.get(d.account_id) || 'unknown';
+      let status = body.draft ? 'draft' : 'scheduled';
+      let error = null;
+      if (!accounts.has(d.account_id)) { status = 'failed'; error = 'This account is only connected as a demo. Connect it for real, then retry.'; }
+      else if (!DESTINATIONS.includes(platform)) { status = 'failed'; error = `Can't post to ${platform} from the server yet.`; }
+      else if (item.kind === 'instagram' && d.account_id === item.account) { status = 'failed'; error = 'This video is already on this Instagram account.'; }
+      stmts.push(D.prepare('INSERT INTO jobs (id, user_id, item_id, account_id, platform, caption, status, scheduled_at, error, options, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .bind(newId(), userId, itemId, d.account_id, platform, fitCaption(String(d.caption ?? body.caption ?? ''), platform), status, at, error, JSON.stringify(cleanOptions(platform, d.options)), t));
+    }
+    await D.batch(stmts);
+    return { id: itemId, scheduled_at: at };
+  }
+
+  /** Videos on a connected Instagram account, newest first, 24 at a time. */
+  async function listInstagramMedia(userId, url, env) {
+    const D = db(env);
+    const acc = await D.prepare('SELECT platform, remote_id, access_token FROM accounts WHERE user_id = ? AND id = ?').bind(userId, url.searchParams.get('account') || '').first();
+    if (!acc || acc.platform !== 'instagram') throw new HttpError(404, 'This Instagram account is not connected on the server yet – reload the page.');
+    const after = url.searchParams.get('after');
+    const token = encodeURIComponent(await unseal(env, acc.access_token));
+    const page = await call(`${GRAPH}/${acc.remote_id}/media?fields=id,caption,media_type,media_product_type,thumbnail_url,permalink,timestamp,media_url&limit=24${after ? `&after=${encodeURIComponent(after)}` : ''}&access_token=${token}`);
+    const videos = (page.data || []).filter((m) => m.media_type === 'VIDEO');
+    const posted = new Set(videos.length
+      ? (await D.prepare(`SELECT DISTINCT source_media_id FROM items WHERE user_id = ? AND source_media_id IN (${videos.map(() => '?').join(',')})`).bind(userId, ...videos.map((m) => m.id)).all()).results.map((r) => r.source_media_id)
+      : []);
+    return {
+      videos: videos.map((m) => ({
+        id: m.id, caption: m.caption || '', thumbnail_url: m.thumbnail_url || null, permalink: m.permalink || null, timestamp: parseTime(m.timestamp) || null,
+        reel: m.media_product_type === 'REELS', downloadable: !!m.media_url, crossposted: posted.has(m.id),
+      })),
+      next: page.paging?.next ? page.paging?.cursors?.after || null : null,
+    };
   }
 
   async function itemAction(userId, itemId, action, env) {
@@ -425,6 +532,8 @@ export function workflowEngine({ call, publish, publishStatus, refresh, GRAPH, T
     if (m === 'PUT' && p === '/api/sync') return sync(userId, await request.json(), env);
     if (m === 'GET' && p === '/api/posts') return listPosts(userId, env);
     if (m === 'POST' && p === '/api/tick') return { processed: await processDue(env, userId) };
+    if (m === 'POST' && p === '/api/posts') return createPost(userId, await request.json(), env);
+    if (m === 'GET' && p === '/api/instagram/media') return listInstagramMedia(userId, url, env);
     let r = /^\/api\/workflows\/([\w-]{1,64})\/run$/.exec(p);
     if (m === 'POST' && r) return runNow(userId, r[1], env);
     r = /^\/api\/items\/([\w-]{1,64})(?:\/(approve|retry))?$/.exec(p);

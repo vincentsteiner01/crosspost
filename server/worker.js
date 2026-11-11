@@ -21,6 +21,7 @@
 //   TIKTOK_VERIFICATION_FILENAME / TIKTOK_VERIFICATION_CONTENT
 //                     the file TikTok asks you to host to verify this worker's address
 //   PUBLIC_URL        this worker's address (TikTok fetches workflow videos from there)
+//   TIKTOK_DEFAULT_MODE  "inbox" (draft in the TikTok app) or "direct" for workflow posts
 // Secret TOKEN_KEY: 32 random bytes (base64) that encrypt the sign-ins workflows keep.
 // Bindings: MEDIA – an R2 bucket for uploaded videos; DB – the D1 database (migrations/).
 
@@ -243,12 +244,16 @@ async function refresh({ platform, refresh_token }, env) {
 }
 
 // ---------- media ----------
+// R2 lifecycle rules by prefix: tmp/ (published right away) and wf/ (workflow copies)
+// go after a day or two, sched/ (planned posts) after 60 days – or as soon as every
+// destination has the video.
 async function putMedia(request, env, url) {
   if (!env.MEDIA) throw new Error('R2 bucket MEDIA is not bound');
   const name = (url.searchParams.get('name') || 'video.mp4').replace(/[^\w.-]+/g, '_').slice(-80);
-  const key = `${crypto.randomUUID()}-${name}`;
+  const prefix = url.searchParams.get('purpose') === 'schedule' ? 'sched' : 'tmp';
+  const key = `${prefix}/${crypto.randomUUID()}-${name}`;
   await env.MEDIA.put(key, request.body, { httpMetadata: { contentType: request.headers.get('Content-Type') || 'video/mp4' } });
-  return { url: `${url.origin}/media/${key}` };
+  return { url: `${url.origin}/media/${key}`, key };
 }
 
 async function getMedia(env, key, cors) {
@@ -258,7 +263,14 @@ async function getMedia(env, key, cors) {
 }
 
 // ---------- publishing ----------
-async function publish({ platform, access_token, account_id, title, caption, video_url }, env) {
+const TRIAL = ['MANUAL', 'SS_PERFORMANCE'];
+
+/**
+ * options – Instagram: trial ("MANUAL" | "SS_PERFORMANCE") shares the Reel as a trial reel,
+ *           shown to non-followers first. TikTok: tiktok_mode "inbox" (draft the person posts
+ *           in the TikTok app) or "direct".
+ */
+async function publish({ platform, access_token, account_id, title, caption, video_url, options = {} }, env) {
   if (!access_token || !video_url) throw new Error('access_token and video_url are required');
 
   if (platform === 'facebook') {
@@ -268,7 +280,9 @@ async function publish({ platform, access_token, account_id, title, caption, vid
 
   if (platform === 'instagram') {
     if (!account_id) throw new Error('Instagram account ID is missing – connect Instagram again.');
-    const container = await call(`${GRAPH}/${account_id}/media`, form({ media_type: 'REELS', video_url, caption: caption || '', access_token }));
+    const values = { media_type: 'REELS', video_url, caption: caption || '', access_token };
+    if (TRIAL.includes(options.trial)) values.trial_params = JSON.stringify({ graduation_strategy: options.trial });
+    const container = await call(`${GRAPH}/${account_id}/media`, form(values));
     // Instagram fetches and processes the video first, which can take minutes.
     // Instead of one long request the site asks POST /publish/status until it is done.
     return { pending: true, container_id: container.id };
@@ -276,12 +290,17 @@ async function publish({ platform, access_token, account_id, title, caption, vid
 
   if (platform === 'tiktok') {
     const auth = { Authorization: `Bearer ${access_token}`, 'Content-Type': 'application/json; charset=UTF-8' };
+    if (options.tiktok_mode === 'inbox') {
+      // Lands as a draft in the TikTok app; the person adds sound, text and posts it there.
+      const init = await call(`${TIKTOK}/post/publish/inbox/video/init/`, { method: 'POST', headers: auth, body: JSON.stringify({ source_info: { source: 'PULL_FROM_URL', video_url } }) });
+      return { pending: true, container_id: init.data?.publish_id };
+    }
     const creator = await call(`${TIKTOK}/post/publish/creator_info/query/`, { method: 'POST', headers: auth });
-    const options = creator.data?.privacy_level_options || ['SELF_ONLY'];
+    const levels = creator.data?.privacy_level_options || ['SELF_ONLY'];
     // A public account offers PUBLIC_TO_EVERYONE; unaudited apps may only post to private accounts.
-    console.log(JSON.stringify({ event: 'tiktok_creator', privacy_level_options: options, max_video_post_duration_sec: creator.data?.max_video_post_duration_sec }));
+    console.log(JSON.stringify({ event: 'tiktok_creator', privacy_level_options: levels, max_video_post_duration_sec: creator.data?.max_video_post_duration_sec }));
     const wanted = env.TIKTOK_PRIVACY || 'SELF_ONLY';
-    const privacy_level = options.includes(wanted) ? wanted : options[0];
+    const privacy_level = levels.includes(wanted) ? wanted : levels[0];
     const init = await call(`${TIKTOK}/post/publish/video/init/`, {
       method: 'POST',
       headers: auth,

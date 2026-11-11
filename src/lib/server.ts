@@ -55,13 +55,13 @@ export function runsOnServer(w: Workflow) {
   return !!serverUrl() && src?.platform === 'instagram' && !!src.auth;
 }
 
-/** Hand the server-side workflows and the sign-ins they need to the server. */
+/** Hand the server-side workflows and the sign-ins of connected accounts (for workflows and planned posts) to the server. */
 export async function syncNow() {
   if (!serverUrl()) return;
   const flows = store.workflows().filter(runsOnServer);
-  if (!flows.length && !getKey()) return;
-  const used = new Set(flows.flatMap((w) => [w.sourceId, ...w.destinationIds]));
-  const accounts = store.accounts().filter((a) => a.auth && used.has(a.id)).map((a) => ({
+  const live = store.accounts().filter((a) => a.auth);
+  if (!live.length) return;
+  const accounts = live.slice(0, 15).map((a) => ({
     id: a.id, platform: a.platform, handle: a.handle, remote_id: a.auth!.remoteId,
     access_token: a.auth!.accessToken, refresh_token: a.auth!.refreshToken, expires_at: a.auth!.expiresAt,
   }));
@@ -81,9 +81,37 @@ export function scheduleSync() {
   syncTimer = window.setTimeout(() => { syncNow().catch((e) => console.warn('Workflow sync failed:', e)); }, 400);
 }
 
+// ---------- planned posts and older Instagram videos ----------
+export interface InstagramVideo { id: string; caption: string; thumbnail_url: string | null; permalink: string | null; timestamp: number | null; reel: boolean; downloadable: boolean; crossposted: boolean }
+
+export async function listInstagramVideos(accountId: string, after?: string) {
+  await syncNow();
+  return api<{ videos: InstagramVideo[]; next: string | null }>(`/api/instagram/media?account=${encodeURIComponent(accountId)}${after ? `&after=${encodeURIComponent(after)}` : ''}`);
+}
+
+/** Keep a file on the server until its planned time. */
+export async function uploadForLater(file: File): Promise<string> {
+  const res = await authedFetch(`/media?purpose=schedule&name=${encodeURIComponent(file.name)}`, { method: 'PUT', headers: { 'Content-Type': file.type || 'video/mp4' }, body: file });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.key) throw new Error(data.error || 'The video could not be uploaded to the server.');
+  return data.key;
+}
+
+export type PostSource = { type: 'upload'; key: string; thumbnail_url?: string } | { type: 'instagram'; account_id: string; media_id: string; permalink?: string; thumbnail_url?: string };
+export interface ServerDelivery { account_id: string; caption: string; options?: Record<string, unknown> }
+
+/** The server publishes at scheduled_at, also while this page is closed. */
+export async function planServerPost(body: { title: string; caption: string; source: PostSource; scheduled_at: number; draft: boolean; deliveries: ServerDelivery[] }) {
+  await syncNow();
+  const r = await api<{ id: string; scheduled_at: number }>('/api/posts', 'POST', body);
+  if (!body.draft && r.scheduled_at <= Date.now() + 5000) await api('/api/tick', 'POST').catch(() => {});
+  await refreshServerPosts().catch(() => {});
+  return r;
+}
+
 // ---------- what the server picked up ----------
 interface ServerJob { id: string; account_id: string; platform: string; status: string; caption: string | null; url: string | null; error: string | null; scheduled_at: number; updated_at: number | null }
-interface ServerItem { id: string; workflow_id: string; caption: string | null; permalink: string | null; thumbnail_url: string | null; created_at: number; jobs: ServerJob[] }
+interface ServerItem { id: string; kind: 'workflow' | 'upload' | 'instagram'; title: string | null; workflow_id: string; caption: string | null; permalink: string | null; thumbnail_url: string | null; created_at: number; jobs: ServerJob[] }
 export interface ServerWorkflowState { id: string; active: number; last_checked: number | null; last_error: string | null }
 
 const STATUS: Record<string, DeliveryStatus> = { draft: 'draft', scheduled: 'scheduled', processing: 'publishing', published: 'published', failed: 'failed' };
@@ -93,11 +121,12 @@ export const serverWorkflowState = (id: string) => flowState.get(id);
 function toPost(i: ServerItem): Post {
   const caption = i.caption ?? '';
   const waiting = i.jobs.filter((j) => j.status === 'scheduled' || j.status === 'draft').map((j) => j.scheduled_at);
+  const fromInstagram = i.kind !== 'upload';
   return {
     id: `srv-${i.id}`, remote: { itemId: i.id, permalink: i.permalink ?? undefined },
-    title: (caption.split('\n').map((s) => s.trim()).find(Boolean) ?? 'Instagram video').slice(0, 80), caption,
-    mediaName: 'Instagram video', mediaType: 'video/mp4', mediaSize: 0, thumb: i.thumbnail_url ?? undefined,
-    createdAt: i.created_at, scheduledAt: waiting.length ? Math.min(...waiting) : i.created_at, workflowId: i.workflow_id,
+    title: (i.title || caption.split('\n').map((s) => s.trim()).find(Boolean) || (fromInstagram ? 'Instagram video' : 'Video')).slice(0, 80), caption,
+    mediaName: fromInstagram ? 'Instagram video' : 'Video', mediaType: 'video/mp4', mediaSize: 0, thumb: i.thumbnail_url ?? undefined,
+    createdAt: i.created_at, scheduledAt: waiting.length ? Math.min(...waiting) : i.created_at, workflowId: i.kind === 'workflow' ? i.workflow_id : undefined,
     deliveries: i.jobs.map((j) => ({ accountId: j.account_id, status: STATUS[j.status] ?? 'failed', caption: j.caption ?? '', error: j.error ?? undefined, url: j.url ?? undefined, at: j.updated_at ?? undefined })),
   };
 }

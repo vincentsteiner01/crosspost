@@ -12,6 +12,8 @@ TIKTOK_VERIFICATION_FILENAME = "tiktokF3W9nYQ2lkglDFjWrNSWbMaWAQ9d89Vn.txt"
 TIKTOK_VERIFICATION_CONTENT = "tiktok-developers-site-verification=F3W9nYQ2lkglDFjWrNSWbMaWAQ9d89Vn"
 # This worker's own address; TikTok fetches workflow videos from <PUBLIC_URL>/media/….
 PUBLIC_URL = "https://crosspost-api.vincentsteiner01.workers.dev"
+# How workflows send to TikTok: "inbox" (draft in the TikTok app) or "direct" (needs TikTok's audit to be public).
+TIKTOK_DEFAULT_MODE = "inbox"
 
 [[r2_buckets]]
 binding = "MEDIA"

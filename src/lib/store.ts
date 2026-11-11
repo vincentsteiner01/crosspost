@@ -24,12 +24,18 @@ export interface YouTubeOptions {
   platformSchedule: boolean;
 }
 export const defaultYouTubeOptions = (): YouTubeOptions => ({ privacy: 'public', short: false, tags: '', madeForKids: false, categoryId: '22', platformSchedule: true });
+/** trial: share as a trial reel (Test-Reel) – shown to non-followers first. MANUAL: you share it with followers in the app; SS_PERFORMANCE: Instagram does when it performs well. */
+export interface InstagramOptions { trial: '' | 'MANUAL' | 'SS_PERFORMANCE' }
+/** inbox: the video lands as a draft in the TikTok app and you post it there; direct: posted right away. */
+export interface TikTokOptions { mode: 'inbox' | 'direct' }
 export interface Post {
   id: string; title: string; caption: string; mediaName: string; mediaType: string; mediaSize: number;
   thumb?: string; createdAt: number; scheduledAt: number; deliveries: Delivery[]; workflowId?: string;
   /** Public address of the video on our server, once uploaded there. */
   mediaUrl?: string;
   youtube?: YouTubeOptions;
+  instagram?: InstagramOptions;
+  tiktok?: TikTokOptions;
   /** Picked up by a workflow on the server (lib/server.ts); lives there, not in this browser. */
   remote?: { itemId: string; permalink?: string };
 }
