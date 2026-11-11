@@ -4,7 +4,7 @@ import { icons } from '../lib/icons';
 import { PLATFORMS, badge, platform, type PlatformId } from '../lib/platforms';
 import * as store from '../lib/store';
 import type { Account, Delivery, Post, Workflow } from '../lib/store';
-import { OAUTH_PLATFORMS, integrations, isConfigured, saveIntegrations, type OAuthPlatform } from '../lib/config';
+import { OAUTH_PLATFORMS, integrations, isConfigured, saveIntegrations, type Integrations, type OAuthPlatform } from '../lib/config';
 import { redirectUri, startOAuth } from '../lib/oauth';
 import { canHandOver, handOverToYouTube, publishReal, rememberFile } from '../lib/publisher';
 import { defaultYouTubeOptions, type YouTubeOptions } from '../lib/store';
@@ -532,13 +532,14 @@ function viewAccounts() {
     <div class="acc-grid">${PLATFORMS.map((p) => card(p.id)).join('')}</div>`, '#/accounts');
 }
 
-const INTEGRATION_FIELDS: { key: OAuthPlatform | 'serverUrl'; label: string; hint: string }[] = [
+// `platform`: whose readiness tag the field shows.
+const INTEGRATION_FIELDS: { key: keyof Integrations; platform?: OAuthPlatform; label: string; hint: string }[] = [
   { key: 'serverUrl', label: 'Server address', hint: 'Address of your deployed server (server/worker.js), e.g. https://crosspost-api.<name>.workers.dev. Needed for Facebook, Instagram and TikTok.' },
-  { key: 'facebook', label: 'Facebook App ID', hint: 'Meta for Developers → your app → App settings → Basic.' },
-  { key: 'instagram', label: 'Instagram App ID', hint: 'Meta for Developers → your app → Instagram → API setup with Instagram login.' },
-  { key: 'tiktok', label: 'TikTok Client key', hint: 'TikTok for Developers → your app → App details.' },
-  { key: 'youtube', label: 'Google OAuth Client ID', hint: 'Google Cloud console → APIs & Services → Credentials (type: Web application). Works on its own for 1 hour per sign-in; with GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET on your server, YouTube access stays connected.' },
-  { key: 'snapchat', label: 'Snapchat Public OAuth Client ID', hint: 'Snap Developer Portal → your app → OAuth client ID (public).' },
+  { key: 'facebook', platform: 'facebook', label: 'Meta App ID', hint: 'Meta for Developers → your app → App settings → Basic. Used for Facebook and Instagram.' },
+  { key: 'metaConfigId', platform: 'instagram', label: 'Instagram configuration ID', hint: 'Meta for Developers → your app → Facebook Login for Business → Configurations → “Instagram API (Unified Login)”.' },
+  { key: 'tiktok', platform: 'tiktok', label: 'TikTok Client key', hint: 'TikTok for Developers → your app → App details.' },
+  { key: 'youtube', platform: 'youtube', label: 'Google OAuth Client ID', hint: 'Google Cloud console → APIs & Services → Credentials (type: Web application). Works on its own for 1 hour per sign-in; with GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET on your server, YouTube access stays connected.' },
+  { key: 'snapchat', platform: 'snapchat', label: 'Snapchat Public OAuth Client ID', hint: 'Snap Developer Portal → your app → OAuth client ID (public).' },
 ];
 
 function integrationsCard() {
@@ -546,7 +547,7 @@ function integrationsCard() {
   return `<form class="card stack" id="integrations-form" style="margin-top:20px">
     <div><h2>Integrations</h2><p class="sub" style="margin:0">Real sign-in for Facebook, Instagram, TikTok, YouTube and Snapchat. Client IDs are public; secrets belong only on the server. Values set while building the site are filled in already.</p></div>
     <div><span class="field-label">Redirect URI</span><input class="input" readonly value="${esc(redirectUri())}" onclick="this.select()"><div class="hint">Enter exactly this address as the allowed redirect / callback URL in every platform's developer settings.</div></div>
-    <div class="form-grid">${INTEGRATION_FIELDS.map((f) => `<div><label class="field-label" for="int-${f.key}">${f.label}${f.key !== 'serverUrl' ? (isConfigured(f.key) ? ' <span class="tag live">ready</span>' : ' <span class="tag">not set</span>') : ''}</label><input class="input" id="int-${f.key}" data-int="${f.key}" value="${esc(c[f.key])}" autocomplete="off" spellcheck="false"><div class="hint">${f.hint}</div></div>`).join('')}</div>
+    <div class="form-grid">${INTEGRATION_FIELDS.map((f) => `<div><label class="field-label" for="int-${f.key}">${f.label}${f.platform ? (isConfigured(f.platform) ? ' <span class="tag live">ready</span>' : ' <span class="tag">not set</span>') : ''}</label><input class="input" id="int-${f.key}" data-int="${f.key}" value="${esc(c[f.key])}" autocomplete="off" spellcheck="false"><div class="hint">${f.hint}</div></div>`).join('')}</div>
     <div class="row" style="justify-content:flex-end"><button class="btn primary" type="submit">Save integrations</button></div>
   </form>`;
 }

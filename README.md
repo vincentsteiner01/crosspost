@@ -40,8 +40,6 @@ https://DEIN-NAME.github.io/crosspost/oauth/callback/
    ```
    npx wrangler secret put FACEBOOK_APP_ID
    npx wrangler secret put FACEBOOK_APP_SECRET
-   npx wrangler secret put INSTAGRAM_APP_ID
-   npx wrangler secret put INSTAGRAM_APP_SECRET
    npx wrangler secret put TIKTOK_CLIENT_KEY
    npx wrangler secret put TIKTOK_CLIENT_SECRET
    npx wrangler secret put SNAPCHAT_CLIENT_ID
@@ -55,13 +53,21 @@ https://DEIN-NAME.github.io/crosspost/oauth/callback/
 
 Überall gilt: als Redirect-/Callback-URL genau die Adresse aus Schritt 1 eintragen.
 
-### Facebook (Seiten) und Instagram
-- developers.facebook.com → **App erstellen** → Typ „Business“.
-- Produkt **Facebook Login for Business** hinzufügen → „Gültige OAuth-Redirect-URIs“.
-- Berechtigungen: `pages_show_list`, `pages_read_engagement`, `pages_manage_posts`.
-- Produkt **Instagram** → „API setup with Instagram login“ → eigene Instagram-App-ID und -Secret, Redirect-URI eintragen.
-  Berechtigungen: `instagram_business_basic`, `instagram_business_content_publish`.
-- Voraussetzung: Instagram-**Business- oder Creator-Konto**; für Facebook eine **Seite**, die du verwaltest.
+### Instagram (Unified Login)
+Instagram läuft über **eine** Meta-App, dieselbe wie Facebook. Ein eigenes „Instagram Login“ bietet Meta neuen Apps nicht mehr an.
+- developers.facebook.com → **App erstellen** → Anwendungsfall „Messaging und Content auf Instagram verwalten“, Business-Portfolio verknüpfen.
+- **Facebook Login for Business → Konfigurationen** → Konfiguration „Instagram API (Unified Login)“ anlegen. Tokentyp: Systemnutzer-Token (läuft nicht ab).
+  Berechtigungen: `instagram_basic`, `instagram_content_publish` (Meta verlangt zusätzlich `instagram_manage_messages`).
+- Die **Konfigurations-ID** (`config_id`) ist öffentlich: in der App unter *Settings → Integrations* („Instagram configuration ID“) oder als GitHub-Variable `VITE_META_CONFIG_ID`.
+- Redirect-URI eintragen unter *Facebook Login for Business → Gültige OAuth-Redirect-URIs*.
+- Beim Verbinden wählt man das Instagram-Konto direkt aus. Der Server holt es über `/me/assigned_instagram_accounts`, eine Facebook-Seite ist **nicht** nötig. Alle Aufrufe gehen an `graph.facebook.com`.
+- Voraussetzung: Instagram-**Business- oder Creator-Konto** (professionelles Konto).
+
+### Facebook (Seiten)
+- Braucht in derselben Meta-App den zusätzlichen Anwendungsfall „Alles auf deiner Seite verwalten“.
+- Berechtigungen: `pages_show_list`, `pages_read_engagement`, `pages_manage_posts`. Voraussetzung: eine **Seite**, die du verwaltest.
+
+### Für Facebook und Instagram gilt
 - Solange die App im Entwicklungsmodus ist, funktioniert sie nur für Personen, die du als Tester/Admin einträgst. Für alle anderen braucht es die **App-Prüfung (App Review)** und eine Unternehmensverifizierung. Die Datenschutzseite der App (`/privacy/`) erklärt das Löschen der Daten – diese Adresse wird bei der Prüfung verlangt.
 
 ### TikTok
@@ -107,7 +113,7 @@ https://DEIN-NAME.github.io/crosspost/oauth/callback/
 Zwei Möglichkeiten:
 - **In der App:** *Settings → Integrations* – Server-Adresse und die öffentlichen IDs (App-ID, Client Key, Client ID) eintragen. Gilt für diesen Browser.
 - **Fest in der Website:** im GitHub-Repository *Settings → Secrets and variables → Actions → Variables* anlegen:
-  `VITE_SERVER_URL`, `VITE_FACEBOOK_APP_ID`, `VITE_INSTAGRAM_APP_ID`, `VITE_TIKTOK_CLIENT_KEY`, `VITE_GOOGLE_CLIENT_ID`, `VITE_SNAPCHAT_CLIENT_ID`.
+  `VITE_SERVER_URL`, `VITE_FACEBOOK_APP_ID`, `VITE_META_CONFIG_ID`, `VITE_TIKTOK_CLIENT_KEY`, `VITE_GOOGLE_CLIENT_ID`, `VITE_SNAPCHAT_CLIENT_ID`.
   Danach im Tab „Actions“ den Workflow erneut starten.
 
 Die **Secrets** (App Secret, Client Secret) gehören nur in den Server – nie in GitHub-Variablen oder in die App.

@@ -8,8 +8,7 @@
 //   POST /publish          publish a video to Facebook, Instagram or TikTok
 //
 // Secrets (set with `npx wrangler secret put NAME`):
-//   FACEBOOK_APP_ID, FACEBOOK_APP_SECRET
-//   INSTAGRAM_APP_ID, INSTAGRAM_APP_SECRET
+//   FACEBOOK_APP_ID, FACEBOOK_APP_SECRET   (the Meta app – used for Facebook and Instagram)
 //   TIKTOK_CLIENT_KEY, TIKTOK_CLIENT_SECRET
 //   SNAPCHAT_CLIENT_ID, SNAPCHAT_CLIENT_SECRET (optional; the site can also sign in to Snapchat alone)
 //   GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET   (YouTube: lasting access, so scheduled uploads work later)
@@ -20,8 +19,7 @@
 //                     the file TikTok asks you to host to verify this worker's address
 // Binding: MEDIA – an R2 bucket for uploaded videos.
 
-const GRAPH = 'https://graph.facebook.com/v21.0';
-const IG_GRAPH = 'https://graph.instagram.com/v21.0';
+const GRAPH = 'https://graph.facebook.com/v25.0';
 const TIKTOK = 'https://open.tiktokapis.com/v2';
 
 export default {
@@ -84,11 +82,24 @@ async function exchange({ platform, code, redirect_uri, code_verifier }, env) {
   }
 
   if (platform === 'instagram') {
-    need(env, 'INSTAGRAM_APP_ID', 'INSTAGRAM_APP_SECRET');
-    const short = await call('https://api.instagram.com/oauth/access_token', form({ client_id: env.INSTAGRAM_APP_ID, client_secret: env.INSTAGRAM_APP_SECRET, grant_type: 'authorization_code', redirect_uri, code }));
-    const long = await call(`https://graph.instagram.com/access_token?${new URLSearchParams({ grant_type: 'ig_exchange_token', client_secret: env.INSTAGRAM_APP_SECRET, access_token: short.access_token })}`);
-    const me = await call(`${IG_GRAPH}/me?fields=user_id,username&access_token=${encodeURIComponent(long.access_token)}`);
-    return { access_token: long.access_token, expires_in: long.expires_in, account_id: me.user_id || me.id || String(short.user_id), name: me.username };
+    // Unified Login (Facebook Login for Business with the configuration
+    // "Instagram API (Unified Login)"): the code becomes a business-integration
+    // system-user token, which does not expire.
+    need(env, 'FACEBOOK_APP_ID', 'FACEBOOK_APP_SECRET');
+    const app = { client_id: env.FACEBOOK_APP_ID, client_secret: env.FACEBOOK_APP_SECRET };
+    const t = await call(`${GRAPH}/oauth/access_token?${new URLSearchParams({ ...app, redirect_uri, code })}`);
+    let token = t.access_token;
+    let expires_in = t.expires_in;
+    if (expires_in) {
+      // A configuration that hands out user tokens instead: make it last 60 days.
+      const long = await call(`${GRAPH}/oauth/access_token?${new URLSearchParams({ ...app, grant_type: 'fb_exchange_token', fb_exchange_token: token })}`).catch(() => null);
+      if (long?.access_token) { token = long.access_token; expires_in = long.expires_in; }
+    }
+    // The Instagram accounts the person shared during sign-in – no Facebook Page involved.
+    const assigned = await call(`${GRAPH}/me/assigned_instagram_accounts?fields=id,username&access_token=${encodeURIComponent(token)}`);
+    const accounts = (assigned.data || []).filter((a) => a.id);
+    if (!accounts.length) throw new Error('Meta did not share an Instagram account. Connect again and select your Instagram professional account.');
+    return { access_token: token, expires_in, account_id: accounts[0].id, name: accounts[0].username, accounts: accounts.map((a) => ({ id: a.id, name: a.username })) };
   }
 
   if (platform === 'tiktok') {
@@ -161,16 +172,17 @@ async function publish({ platform, access_token, account_id, title, caption, vid
   }
 
   if (platform === 'instagram') {
-    const container = await call(`${IG_GRAPH}/${account_id}/media`, form({ media_type: 'REELS', video_url, caption: caption || '', access_token }));
+    if (!account_id) throw new Error('Instagram account ID is missing – connect Instagram again.');
+    const container = await call(`${GRAPH}/${account_id}/media`, form({ media_type: 'REELS', video_url, caption: caption || '', access_token }));
     // Instagram fetches and processes the video first.
     for (let i = 0; i < 20; i++) {
-      const s = await call(`${IG_GRAPH}/${container.id}?fields=status_code,status&access_token=${encodeURIComponent(access_token)}`);
+      const s = await call(`${GRAPH}/${container.id}?fields=status_code,status&access_token=${encodeURIComponent(access_token)}`);
       if (s.status_code === 'FINISHED') break;
       if (s.status_code === 'ERROR' || s.status_code === 'EXPIRED') throw new Error(`Instagram could not process the video: ${s.status || s.status_code}`);
       await sleep(3000);
     }
-    const media = await call(`${IG_GRAPH}/${account_id}/media_publish`, form({ creation_id: container.id, access_token }));
-    const info = await call(`${IG_GRAPH}/${media.id}?fields=permalink&access_token=${encodeURIComponent(access_token)}`).catch(() => ({}));
+    const media = await call(`${GRAPH}/${account_id}/media_publish`, form({ creation_id: container.id, access_token }));
+    const info = await call(`${GRAPH}/${media.id}?fields=permalink&access_token=${encodeURIComponent(access_token)}`).catch(() => ({}));
     return { id: media.id, url: info.permalink };
   }
 

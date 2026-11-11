@@ -1,7 +1,7 @@
 # Builds the site and publishes it on GitHub Pages on every push to main.
 # Repository → Settings → Pages → Source: "GitHub Actions".
 # Repository → Settings → Secrets and variables → Actions → Variables:
-#   VITE_SERVER_URL, VITE_FACEBOOK_APP_ID, VITE_INSTAGRAM_APP_ID,
+#   VITE_SERVER_URL, VITE_FACEBOOK_APP_ID, VITE_META_CONFIG_ID,
 #   VITE_TIKTOK_CLIENT_KEY, VITE_GOOGLE_CLIENT_ID, VITE_SNAPCHAT_CLIENT_ID
 # (all optional; they can also be entered later in the app under Settings → Integrations).
 name: Deploy to GitHub Pages
@@ -37,7 +37,7 @@ jobs:
           BASE_PATH: ${{ steps.pages.outputs.base_path }}/
           VITE_SERVER_URL: ${{ vars.VITE_SERVER_URL }}
           VITE_FACEBOOK_APP_ID: ${{ vars.VITE_FACEBOOK_APP_ID }}
-          VITE_INSTAGRAM_APP_ID: ${{ vars.VITE_INSTAGRAM_APP_ID }}
+          VITE_META_CONFIG_ID: ${{ vars.VITE_META_CONFIG_ID }}
           VITE_TIKTOK_CLIENT_KEY: ${{ vars.VITE_TIKTOK_CLIENT_KEY }}
           VITE_GOOGLE_CLIENT_ID: ${{ vars.VITE_GOOGLE_CLIENT_ID }}
           VITE_SNAPCHAT_CLIENT_ID: ${{ vars.VITE_SNAPCHAT_CLIENT_ID }}

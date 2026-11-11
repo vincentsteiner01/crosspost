@@ -8,8 +8,10 @@ export const OAUTH_PLATFORMS: OAuthPlatform[] = ['facebook', 'instagram', 'tikto
 
 export interface Integrations {
   serverUrl: string;
+  /** Meta app ID – used for Facebook and Instagram. */
   facebook: string;
-  instagram: string;
+  /** Configuration ID of the Meta login configuration "Instagram API (Unified Login)". */
+  metaConfigId: string;
   tiktok: string;
   youtube: string;
   snapchat: string;
@@ -19,7 +21,7 @@ const env = import.meta.env;
 const built: Integrations = {
   serverUrl: env.VITE_SERVER_URL ?? '',
   facebook: env.VITE_FACEBOOK_APP_ID ?? '',
-  instagram: env.VITE_INSTAGRAM_APP_ID ?? '',
+  metaConfigId: env.VITE_META_CONFIG_ID ?? '',
   tiktok: env.VITE_TIKTOK_CLIENT_KEY ?? '',
   youtube: env.VITE_GOOGLE_CLIENT_ID ?? '',
   snapchat: env.VITE_SNAPCHAT_CLIENT_ID ?? '',
@@ -43,9 +45,15 @@ export function saveIntegrations(values: Partial<Integrations>) {
   localStorage.setItem(KEY, JSON.stringify(values));
 }
 
+/** The public client ID a platform's sign-in uses. Instagram signs in through the Meta app (Unified Login). */
+export function clientIdFor(p: OAuthPlatform, c = integrations()): string {
+  return p === 'instagram' ? c.facebook : c[p];
+}
+
 /** Whether a platform can use its real sign-in. YouTube and Snapchat work from the browser alone. */
 export function isConfigured(p: OAuthPlatform): boolean {
   const c = integrations();
-  if (!c[p]) return false;
+  if (!clientIdFor(p, c)) return false;
+  if (p === 'instagram' && !c.metaConfigId) return false;
   return p === 'youtube' || p === 'snapchat' ? true : !!c.serverUrl;
 }

@@ -1,8 +1,12 @@
 // OAuth 2.0 sign-in for each platform (authorization code flow, with PKCE
 // where the platform supports it). Endpoints and scopes follow the official
 // developer documentation of each platform:
-//   Facebook   – Facebook Login, manual flow (graph API v21.0)
-//   Instagram  – Instagram API with Instagram Login (business accounts)
+//   Facebook   – Facebook Login, manual flow (Graph API v25.0)
+//   Instagram  – Meta "Unified Login": Facebook Login for Business with the
+//                configuration "Instagram API (Unified Login)" (config_id
+//                instead of scope). The server turns the code into a system-user
+//                token that does not expire and finds the Instagram account
+//                via /me/assigned_instagram_accounts – no Facebook Page needed.
 //   TikTok     – Login Kit for Web (+ Content Posting API scope)
 //   YouTube    – Google OAuth 2.0: with our server, the web-server flow with
 //                offline access (lasting refresh token); without it, the
@@ -10,7 +14,7 @@
 //   Snapchat   – Login Kit, client-side PKCE
 // Codes from Facebook, Instagram and TikTok are exchanged on our server, the
 // only place that may know the app secrets.
-import { integrations, type OAuthPlatform } from './config';
+import { clientIdFor, integrations, type OAuthPlatform } from './config';
 import { absoluteUrl } from './paths';
 import type { AccountAuth } from './store';
 
@@ -26,7 +30,7 @@ interface Provider {
 
 const PROVIDERS: Record<OAuthPlatform, Provider> = {
   facebook: {
-    authorize: 'https://www.facebook.com/v21.0/dialog/oauth',
+    authorize: 'https://www.facebook.com/v25.0/dialog/oauth',
     clientParam: 'client_id',
     scope: 'public_profile,pages_show_list,pages_read_engagement,pages_manage_posts',
     scopeSeparator: ',',
@@ -34,12 +38,14 @@ const PROVIDERS: Record<OAuthPlatform, Provider> = {
     pkce: false,
   },
   instagram: {
-    authorize: 'https://www.instagram.com/oauth/authorize',
+    // The permissions come from the Meta login configuration (config_id), not from a scope.
+    authorize: 'https://www.facebook.com/v25.0/dialog/oauth',
     clientParam: 'client_id',
-    scope: 'instagram_business_basic,instagram_business_content_publish',
+    scope: '',
     scopeSeparator: ',',
     responseType: 'code',
     pkce: false,
+    extra: { override_default_response_type: 'true' },
   },
   tiktok: {
     authorize: 'https://www.tiktok.com/v2/auth/authorize/',
@@ -87,13 +93,18 @@ function providerFor(platform: OAuthPlatform): Provider {
   if (platform === 'youtube' && integrations().serverUrl) {
     return { ...p, responseType: 'code', extra: { ...p.extra, access_type: 'offline', prompt: 'consent select_account' } };
   }
+  if (platform === 'instagram') {
+    const configId = integrations().metaConfigId;
+    if (!configId) throw new Error('Die Instagram-Konfigurations-ID fehlt (Einstellungen → Integrationen).');
+    return { ...p, extra: { ...p.extra, config_id: configId } };
+  }
   return p;
 }
 
 /** Send the person to the platform's consent screen. */
 export async function startOAuth(platform: OAuthPlatform, opts: { signIn?: boolean } = {}) {
   const p = providerFor(platform);
-  const clientId = integrations()[platform];
+  const clientId = clientIdFor(platform);
   if (!clientId) throw new Error(`No client ID for ${platform}`);
   const pending: Pending = { platform, state: randomString(), signIn: !!opts.signIn, startedAt: Date.now() };
   const q = new URLSearchParams({
@@ -104,6 +115,7 @@ export async function startOAuth(platform: OAuthPlatform, opts: { signIn?: boole
     state: pending.state,
     ...p.extra,
   });
+  if (!p.scope) q.delete('scope');
   if (p.pkce) {
     pending.verifier = randomString(48);
     q.set('code_challenge', await challengeFor(pending.verifier));
