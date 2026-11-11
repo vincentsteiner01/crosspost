@@ -113,7 +113,7 @@ export async function planServerPost(body: { title: string; caption: string; sou
 interface ServerJob { id: string; account_id: string; platform: string; status: string; caption: string | null; url: string | null; error: string | null; scheduled_at: number; updated_at: number | null; options: string | null }
 
 const inInbox = (j: ServerJob) => j.platform === 'tiktok' && j.status === 'published' && /"tiktok_mode":"inbox"/.test(j.options ?? '');
-interface ServerItem { id: string; kind: 'workflow' | 'upload' | 'instagram'; title: string | null; workflow_id: string; caption: string | null; permalink: string | null; thumbnail_url: string | null; created_at: number; jobs: ServerJob[] }
+interface ServerItem { id: string; kind: 'workflow' | 'upload' | 'instagram'; title: string | null; workflow_id: string; source_media_id: string; source_account_id: string | null; caption: string | null; permalink: string | null; thumbnail_url: string | null; created_at: number; jobs: ServerJob[] }
 export interface ServerWorkflowState { id: string; active: number; last_checked: number | null; last_error: string | null }
 
 const STATUS: Record<string, DeliveryStatus> = { draft: 'draft', scheduled: 'scheduled', processing: 'publishing', published: 'published', failed: 'failed' };
@@ -125,7 +125,8 @@ function toPost(i: ServerItem): Post {
   const waiting = i.jobs.filter((j) => j.status === 'scheduled' || j.status === 'draft').map((j) => j.scheduled_at);
   const fromInstagram = i.kind !== 'upload';
   return {
-    id: `srv-${i.id}`, remote: { itemId: i.id, permalink: i.permalink ?? undefined },
+    id: `srv-${i.id}`,
+    remote: { itemId: i.id, permalink: i.permalink ?? undefined, kind: i.kind, mediaId: fromInstagram ? i.source_media_id : undefined, sourceAccountId: i.source_account_id ?? undefined },
     title: (i.title || caption.split('\n').map((s) => s.trim()).find(Boolean) || (fromInstagram ? 'Instagram video' : 'Video')).slice(0, 80), caption,
     mediaName: fromInstagram ? 'Instagram video' : 'Video', mediaType: 'video/mp4', mediaSize: 0, thumb: i.thumbnail_url ?? undefined,
     createdAt: i.created_at, scheduledAt: waiting.length ? Math.min(...waiting) : i.created_at, workflowId: i.kind === 'workflow' ? i.workflow_id : undefined,

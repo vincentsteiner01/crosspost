@@ -205,7 +205,7 @@ export function workflowEngine({ call, publish, publishStatus, refresh, GRAPH, T
   // ---------- reading back ----------
   async function listPosts(userId, env) {
     const D = db(env);
-    const items = (await D.prepare('SELECT id, kind, workflow_id, title, caption, permalink, thumbnail_url, created_at FROM items WHERE user_id = ? ORDER BY created_at DESC LIMIT 50').bind(userId).all()).results;
+    const items = (await D.prepare('SELECT id, kind, workflow_id, title, caption, permalink, thumbnail_url, source_media_id, source_account_id, created_at FROM items WHERE user_id = ? ORDER BY created_at DESC LIMIT 50').bind(userId).all()).results;
     const jobs = items.length
       ? (await D.prepare(`SELECT id, item_id, account_id, platform, status, caption, url, error, scheduled_at, updated_at, options FROM jobs
           WHERE user_id = ? AND item_id IN (SELECT id FROM items WHERE user_id = ? ORDER BY created_at DESC LIMIT 50)`).bind(userId, userId).all()).results

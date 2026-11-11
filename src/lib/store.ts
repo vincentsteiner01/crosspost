@@ -39,7 +39,7 @@ export interface Post {
   instagram?: InstagramOptions;
   tiktok?: TikTokOptions;
   /** Picked up by a workflow on the server (lib/server.ts); lives there, not in this browser. */
-  remote?: { itemId: string; permalink?: string };
+  remote?: { itemId: string; permalink?: string; kind?: 'workflow' | 'upload' | 'instagram'; mediaId?: string; sourceAccountId?: string };
 }
 
 const KEY = 'crosspost:v1';

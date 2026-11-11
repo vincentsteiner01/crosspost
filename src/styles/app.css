@@ -226,6 +226,33 @@ body.app-page { background: var(--app-bg); color: #1f2430; }
 
 .scrim { display: none; }
 
+.post-link { color: inherit; text-decoration: none; display: block; min-width: 0; }
+.post-link:hover b { color: #d94b5c; }
+a.thumb { text-decoration: none; }
+.post-detail { display: grid; grid-template-columns: minmax(220px, 320px) minmax(0, 1fr); gap: 20px; align-items: start; }
+.detail-media { padding: 12px; position: sticky; top: 88px; }
+.detail-media video, .detail-media img, .detail-media .ph-empty { width: 100%; aspect-ratio: 9 / 16; object-fit: contain; background: #111; border-radius: 12px; display: block; }
+.detail-media .ph-empty { display: grid; place-items: center; color: #8a90a0; }
+.detail-media .ph-empty svg { width: 28px; height: 28px; }
+.detail-media .hint { margin: 10px 2px 0; }
+.copy-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 6px; }
+.copy-row .field-label { margin: 0; }
+.detail-title { font-size: 17px; font-weight: 600; color: #111; word-break: break-word; }
+.detail-text { white-space: pre-wrap; word-break: break-word; color: #1f2430; line-height: 1.55; background: #f7f7fa; border-radius: 10px; padding: 12px 14px; min-height: 44px; }
+.detail-dest { display: grid; gap: 6px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.detail-dest:last-child { border-bottom: 0; padding-bottom: 0; }
+.detail-dest-top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.detail-dest-top .grow { flex: 1; min-width: 140px; }
+.detail-dest-top b { display: block; color: #111; }
+.detail-dest-top small { color: #6b7280; }
+.detail-dest summary { cursor: pointer; color: #6b7280; font-size: 13px; margin-bottom: 6px; }
+.detail-error { margin: 0; color: #c0263d; font-size: 13px; }
+.detail-settings { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 10px; }
+.detail-settings li { display: flex; align-items: center; gap: 10px; color: #1f2430; }
+@media (max-width: 900px) {
+  .post-detail { grid-template-columns: 1fr; }
+  .detail-media { position: static; max-width: 360px; width: 100%; margin: 0 auto; }
+}
 @media (max-width: 1100px) {
   .composer { grid-template-columns: 1fr; }
   .sticky { position: static; }

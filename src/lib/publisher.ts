@@ -10,6 +10,7 @@ import { integrations } from './config';
 import { refreshAuth, serverCall } from './oauth';
 import { commit, defaultYouTubeOptions, type Account, type Post } from './store';
 import { authedFetch } from './server';
+import { keptVideo } from './videos';
 
 /** Picked files stay in memory for this session; scheduled posts after a reload need the server copy. */
 const files = new Map<string, File>();
@@ -122,7 +123,9 @@ async function uploadToServer(post: Post, file: File): Promise<string> {
 /** Publish one post to one connected account. Returns a link to the post when the platform gives one. */
 export async function publishReal(acc: Account, post: Post, caption: string, onProgress?: (pct: number) => void): Promise<string | undefined> {
   if (!acc.auth) throw new PublishError('Konto ist nur als Demo verbunden.');
-  const file = files.get(post.id);
+  // After a reload the file is no longer in memory, but this browser may have kept it.
+  let file = files.get(post.id);
+  if (!file) { file = await keptVideo(post.id); if (file) files.set(post.id, file); }
 
   if (acc.platform === 'snapchat') {
     throw new PublishError('Snapchat erlaubt normalen Apps kein automatisches Posten. Bitte das Video in der Snapchat-App teilen.');

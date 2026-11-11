@@ -9,6 +9,7 @@ import { redirectUri, startOAuth } from '../lib/oauth';
 import { canHandOver, handOverToYouTube, publishReal, rememberFile } from '../lib/publisher';
 import { defaultYouTubeOptions, type InstagramOptions, type TikTokOptions, type YouTubeOptions } from '../lib/store';
 import { url } from '../lib/paths';
+import { forgetAllVideos, forgetVideo, keepVideo, keptVideo, keptVideosUsage } from '../lib/videos';
 import { itemAction, listInstagramVideos, planServerPost, runServerWorkflow, runsOnServer, scheduleSync, serverHeartbeat, serverWorkflowState, syncNow, uploadForLater, type InstagramVideo, type PostSource } from '../lib/server';
 
 const user = store.currentUser();
@@ -202,9 +203,9 @@ function shell(title: string, body: string, route: string) {
 function postRow(p: Post, actions = true) {
   const status = postStatus(p);
   return `<div class="post-row">
-    <div class="thumb">${p.thumb ? `<img src="${p.thumb}" alt="">` : icons.play}</div>
+    <a class="thumb" href="#/post?id=${encodeURIComponent(p.id)}" aria-label="Open post">${p.thumb ? `<img src="${esc(p.thumb)}" alt="">` : icons.play}</a>
     <div class="post-main">
-      <b>${esc(p.title || 'Untitled post')}</b>
+      <a class="post-link" href="#/post?id=${encodeURIComponent(p.id)}"><b>${esc(p.title || 'Untitled post')}</b></a>
       <small>${STATUS_LABEL[status]} · ${fmtDate(p.scheduledAt)}${p.workflowId ? ' · via workflow' : ''}${p.remote?.permalink ? ` · <a href="${esc(p.remote.permalink)}" target="_blank" rel="noopener">Original</a>` : ''}</small>
       <div class="chips">${p.deliveries.map((d) => {
         const a = store.account(d.accountId);
@@ -492,7 +493,7 @@ function saveLocalPost(d: Draft, at: number, publish: boolean, ids: string[]) {
     createdAt: store.posts().find((p) => p.id === d.id)?.createdAt ?? Date.now(), scheduledAt: at,
     deliveries: ids.map((id) => ({ accountId: id, status: publish ? 'scheduled' : 'draft', caption: d.overrides[id] ?? d.caption })),
   };
-  if (d.file) rememberFile(post.id, d.file);
+  if (d.file) { rememberFile(post.id, d.file); keepVideo(post.id, d.file); }
   store.savePost(post);
 }
 
@@ -516,10 +517,11 @@ async function submitViaServer(d: Draft, at: number, publish: boolean, live: str
       toast('Uploading the video to the server…');
       source = { type: 'upload', key: await uploadForLater(d.file), thumbnail_url: d.thumb };
     }
-    await planServerPost({
+    const planned = await planServerPost({
       title: d.title.trim(), caption: d.caption, source, scheduled_at: at, draft: !publish,
       deliveries: live.map((id) => ({ account_id: id, caption: d.overrides[id] ?? d.caption, options: serverOptions(id, d) })),
     });
+    if (d.file) keepVideo(`srv-${planned.id}`, d.file);
     // Accounts only connected as a demo keep the simulated post.
     const demo = [...d.selected].filter((id) => !live.includes(id));
     if (demo.length) { saveLocalPost({ ...d, id: store.uid() }, at, publish, demo); processQueue(); }
@@ -571,6 +573,120 @@ async function setMedia(file: File) {
   render();
   d.thumb = await makeThumb(file, d.mediaUrl);
   if (draft === d) render();
+}
+
+// ---------- one post, to look at again ----------
+const YT_PRIVACY: Record<string, string> = { public: 'Public', unlisted: 'Unlisted', private: 'Private' };
+
+function deliveryBlock(d: Delivery, p: Post) {
+  const a = store.account(d.accountId);
+  const label = d.status === 'published' && d.label ? d.label : STATUS_LABEL[d.status]!;
+  return `<div class="detail-dest">
+    <div class="detail-dest-top">${a ? badge(a.platform, 28) : ''}<span class="grow"><b>${a ? platform(a.platform).name : 'Removed account'}</b><small>${a ? '@' + esc(a.handle) : ''}${d.at ? ` · ${fmtDate(d.at)}` : ''}</small></span><span class="chip ${d.status}">${esc(label)}</span>${d.url ? `<a class="btn small" href="${esc(d.url)}" target="_blank" rel="noopener">Open</a>` : ''}</div>
+    ${d.error ? `<p class="detail-error">${esc(d.error)}</p>` : ''}
+    ${d.caption !== p.caption ? `<details><summary>Own caption for this account</summary><div class="detail-text">${esc(d.caption) || '<span class="hint">Empty</span>'}</div></details>` : ''}
+  </div>`;
+}
+
+function postSettings(p: Post) {
+  const rows: string[] = [];
+  if (p.youtube) {
+    const y = p.youtube;
+    rows.push(`<li>${badge('youtube', 20)}<span>${YT_PRIVACY[y.privacy] ?? y.privacy}${y.short ? ' · Short' : ''}${y.madeForKids ? ' · Made for kids' : ''}${y.tags ? ` · Tags: ${esc(y.tags)}` : ''}</span></li>`);
+  }
+  if (p.instagram?.trial) rows.push(`<li>${badge('instagram', 20)}<span>Trial reel · ${p.instagram.trial === 'MANUAL' ? 'you share it with followers in the app' : 'shared with followers when it performs well'}</span></li>`);
+  if (p.tiktok) rows.push(`<li>${badge('tiktok', 20)}<span>${p.tiktok.mode === 'inbox' ? 'Sent as a draft to the TikTok app' : 'Posted directly'}</span></li>`);
+  return rows.length ? `<section class="card"><h2>Settings</h2><ul class="detail-settings">${rows.join('')}</ul></section>` : '';
+}
+
+function viewPost(params: URLSearchParams) {
+  const p = store.allPosts().find((x) => x.id === params.get('id'));
+  if (!p) return shell('Post', `<section class="card"><div class="empty"><b>Post not found</b>It may have been deleted.<br><a class="btn" href="#/posts">Back to Content</a></div></section>`, '#/posts');
+  const status = postStatus(p);
+  const origin = p.remote
+    ? (p.remote.kind === 'upload' ? 'Uploaded here, published by the server' : p.workflowId ? 'Picked up by a workflow from Instagram' : 'Cross-posted from Instagram')
+    : 'Published from this browser';
+  return shell('Post', `
+    <div class="section-head"><a class="btn small" href="#/posts">${icons.chevronLeft}Content</a>
+      <div class="row">
+        <button class="btn small" data-action="post-again" data-id="${p.id}">Post again</button>
+        ${status === 'draft' ? `<button class="btn small primary" data-action="approve" data-id="${p.id}">Approve</button>` : ''}
+        ${p.deliveries.some((d) => d.status === 'failed') ? `<button class="btn small" data-action="retry" data-id="${p.id}">Retry</button>` : ''}
+        ${(status === 'draft' || status === 'scheduled') && !p.remote ? `<a class="btn small" href="#/create?edit=${p.id}">Edit</a>` : ''}
+        <button class="icon-btn" data-action="delete-post" data-id="${p.id}" aria-label="Delete">${icons.trash}</button>
+      </div>
+    </div>
+    <div class="post-detail">
+      <section class="card detail-media" id="detail-media" data-id="${esc(p.id)}">
+        ${p.thumb ? `<img src="${esc(p.thumb)}" alt="">` : `<div class="ph-empty">${icons.play}</div>`}
+        <p class="hint" id="detail-note">Looking for the video…</p>
+      </section>
+      <div class="stack">
+        <section class="card stack">
+          <div><div class="copy-row"><span class="field-label">Title</span><button class="btn small" data-action="copy" data-v="d-title">Copy</button></div><div class="detail-title" id="d-title">${esc(p.title)}</div></div>
+          <div><div class="copy-row"><span class="field-label">Description</span><button class="btn small" data-action="copy" data-v="d-caption">Copy</button></div><div class="detail-text" id="d-caption">${esc(p.caption)}</div></div>
+          <p class="sub" style="margin:0">${STATUS_LABEL[status]} · ${fmtDate(p.scheduledAt)} · ${origin}${p.remote?.permalink ? ` · <a href="${esc(p.remote.permalink)}" target="_blank" rel="noopener">Original on Instagram</a>` : ''}</p>
+        </section>
+        <section class="card"><h2>Where it went</h2>${p.deliveries.map((d) => deliveryBlock(d, p)).join('') || '<p class="hint">No accounts.</p>'}</section>
+        ${postSettings(p)}
+      </div>
+    </div>`, '#/posts');
+}
+
+// One object URL for the video on screen; reused across re-renders, released when another video shows.
+let viewer: { id: string; url: string } | null = null;
+
+async function mountPostMedia() {
+  const box = root.querySelector<HTMLElement>('#detail-media');
+  if (!box) return;
+  const id = box.dataset.id!;
+  const show = (src: string) => {
+    box.querySelector('img, .ph-empty')?.remove();
+    box.querySelector('#detail-note')?.remove();
+    const v = document.createElement('video');
+    v.src = src; v.controls = true; v.playsInline = true; v.preload = 'metadata';
+    box.prepend(v);
+  };
+  if (viewer?.id === id) { show(viewer.url); return; }
+  const file = await keptVideo(id);
+  if (!root.contains(box)) return;
+  if (file) {
+    if (viewer) URL.revokeObjectURL(viewer.url);
+    viewer = { id, url: URL.createObjectURL(file) };
+    show(viewer.url);
+    return;
+  }
+  const p = store.allPosts().find((x) => x.id === id);
+  // A copy on our server lives about a day after posting.
+  if (p?.mediaUrl && Date.now() - p.createdAt < 20 * 3600_000) { show(p.mediaUrl); return; }
+  const note = box.querySelector('#detail-note');
+  if (!note) return;
+  const link = p?.remote?.permalink ?? p?.deliveries.find((d) => d.url)?.url;
+  note.innerHTML = `This browser has no copy of the video${p?.remote ? '' : ' (posted before videos were kept, or from another device)'}.${link ? ` <a href="${esc(link)}" target="_blank" rel="noopener">Watch it here</a>.` : ''}`;
+}
+
+/** A new post with the same video, text and accounts. */
+async function draftFromPost(p: Post): Promise<Draft> {
+  const d = newDraft();
+  d.title = p.title;
+  d.caption = p.caption;
+  d.selected = new Set(p.deliveries.map((x) => x.accountId).filter((id) => store.account(id)));
+  d.overrides = Object.fromEntries(p.deliveries.filter((x) => x.caption !== p.caption).map((x) => [x.accountId, x.caption]));
+  d.open = new Set(Object.keys(d.overrides));
+  if (p.youtube) d.yt = { ...d.yt, ...p.youtube };
+  if (p.instagram) d.insta = { ...p.instagram };
+  if (p.tiktok) d.tt = { ...p.tiktok };
+  const file = await keptVideo(p.id);
+  if (file) {
+    Object.assign(d, { file, mediaUrl: URL.createObjectURL(file), mediaName: file.name, mediaType: file.type, mediaSize: file.size, thumb: p.thumb });
+  } else if (p.remote?.mediaId) {
+    const accountId = p.remote.sourceAccountId ?? store.workflows().find((w) => w.id === p.workflowId)?.sourceId;
+    if (accountId && store.account(accountId)) {
+      Object.assign(d, { ig: { accountId, mediaId: p.remote.mediaId, permalink: p.remote.permalink }, mediaName: 'Instagram video', mediaType: 'video/mp4', thumb: p.thumb });
+      d.selected.delete(accountId);
+    }
+  }
+  return d;
 }
 
 const POST_TABS = ['all', 'scheduled', 'draft', 'published', 'failed'] as const;
@@ -706,6 +822,9 @@ function viewSettings() {
         <h2>Your data</h2>
         <p class="sub">Your posts, workflows and accounts are stored in this browser. Workflows with an Instagram source are also kept on the server, together with the sign-ins they need (encrypted), so they run while this page is closed.</p>
         <div class="row"><button class="btn" data-action="export">Download my data</button><button class="btn danger" data-action="wipe">Delete posts &amp; workflows</button></div>
+        <h2 style="margin-top:24px">Videos in this browser</h2>
+        <p class="sub">Videos you post are kept here (up to 1 GB each), so you can watch a post again and post it once more. <span id="kept-usage"></span></p>
+        <div class="row"><button class="btn" data-action="forget-videos">Remove kept videos</button></div>
         <h2 style="margin-top:24px">About publishing</h2>
         <p class="sub">Accounts marked <b>Live</b> publish for real. Accounts marked <b>Demo</b> are simulated. Posts you schedule here go out while the app is open in a browser; workflows from Instagram run on the server around the clock.</p>
       </section>
@@ -721,7 +840,7 @@ function render() {
   const views: Record<string, () => string> = {
     '/': viewDashboard, '/create': () => viewCreate(params), '/posts': viewPosts, '/calendar': viewCalendar,
     '/workflows': viewWorkflows, '/workflows/new': () => viewWorkflowEdit(params), '/workflows/edit': () => viewWorkflowEdit(params),
-    '/accounts': viewAccounts, '/settings': viewSettings,
+    '/accounts': viewAccounts, '/settings': viewSettings, '/post': () => viewPost(params),
   };
   const view = views[path!] ?? viewDashboard;
   const scroll = window.scrollY;
@@ -734,6 +853,10 @@ function render() {
 }
 
 function mount(path: string) {
+  if (path === '/post') mountPostMedia();
+  if (path === '/settings') {
+    keptVideosUsage().then((u) => { const el = root.querySelector('#kept-usage'); if (el) el.textContent = u.count ? `Now: ${u.count} ${u.count === 1 ? 'video' : 'videos'}, ${fmtSize(u.bytes)}.` : 'None kept yet.'; });
+  }
   if (path === '/create') {
     const d = draft!;
     const fileInput = root.querySelector<HTMLInputElement>('#media-input')!;
@@ -859,7 +982,14 @@ root.addEventListener('click', (e) => {
     case 'publish': savePostFromDraft(true); break;
     case 'approve': if (post?.remote) remoteDo(post, 'approve', 'Approved: publishing'); else if (post) { post.deliveries.forEach((d) => { if (d.status === 'draft') d.status = 'scheduled'; }); if (post.scheduledAt < Date.now()) post.scheduledAt = Date.now(); store.savePost(post); processQueue(); toast('Approved: publishing'); } break;
     case 'retry': if (post?.remote) remoteDo(post, 'retry', 'Trying again'); else if (post) { post.deliveries.forEach((d) => { if (d.status === 'failed') { d.status = 'scheduled'; d.error = undefined; } }); post.scheduledAt = Math.min(post.scheduledAt, Date.now()); store.savePost(post); processQueue(); } break;
-    case 'delete-post': if (post) confirmBox('Delete this post?', 'It is removed from your content list. Posts already published stay on the platforms.', 'Delete', () => { if (post.remote) remoteDo(post, 'delete', 'Post deleted'); else { store.deletePost(post.id); toast('Post deleted'); } }); break;
+    case 'delete-post': if (post) confirmBox('Delete this post?', 'It is removed from your content list, and the video kept in this browser goes too. Posts already published stay on the platforms.', 'Delete', () => {
+      forgetVideo(post.id);
+      if (post.remote) remoteDo(post, 'delete', 'Post deleted'); else { store.deletePost(post.id); toast('Post deleted'); }
+      if (location.hash.startsWith('#/post')) location.hash = '#/posts';
+    }); break;
+    case 'post-again': if (post) draftFromPost(post).then((d) => { draft = d; location.hash = '#/create?from=' + encodeURIComponent(post.id); toast(d.mediaName ? 'Copied into a new post' : 'Copied the text – choose the video again'); }); break;
+    case 'copy': { const t = document.getElementById(v!)?.innerText ?? ''; navigator.clipboard.writeText(t).then(() => toast('Copied'), () => toast('Copying is not allowed here')); break; }
+    case 'forget-videos': confirmBox('Remove kept videos?', 'Posts stay in your content list; only the video copies in this browser are removed. Published posts stay on the platforms.', 'Remove', () => { forgetAllVideos().then(() => { toast('Kept videos removed'); render(); }); }); break;
     case 'tab': postTab = v as typeof postTab; render(); break;
     case 'cal': calMonth = v === '0' ? new Date(new Date().getFullYear(), new Date().getMonth(), 1) : new Date(calMonth.getFullYear(), calMonth.getMonth() + Number(v), 1); render(); break;
     case 'wf-toggle': { const w = store.workflows().find((x) => x.id === id); if (w) { w.active = (el as HTMLInputElement).checked; store.saveWorkflow(w); scheduleSync(); toast(w.active ? 'Workflow active' : 'Workflow paused'); } break; }
@@ -899,6 +1029,8 @@ store.onChange(() => {
   const a = document.activeElement;
   if (a && /INPUT|TEXTAREA|SELECT/.test(a.tagName) && root.contains(a) && (a as HTMLInputElement).type !== 'checkbox') return;
   if (document.querySelector('.modal-back')) return;
+  const playing = root.querySelector<HTMLVideoElement>('#detail-media video');
+  if (playing && !playing.paused) return;
   render();
 });
 
