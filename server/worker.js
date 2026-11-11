@@ -6,6 +6,7 @@
 //   POST /oauth/refresh    get a new access token with a refresh token
 //   PUT  /media            keep an uploaded video at a public address
 //   POST /publish          publish a video to Facebook, Instagram or TikTok
+//   POST /publish/status   Instagram: publish the Reel once Instagram has processed it
 //
 // Secrets (set with `npx wrangler secret put NAME`):
 //   FACEBOOK_APP_ID, FACEBOOK_APP_SECRET   (the Meta app – used for Facebook and Instagram)
@@ -43,6 +44,7 @@ export default {
       if (request.method === 'PUT' && url.pathname === '/media') return json(await putMedia(request, env, url));
       if (request.method === 'GET' && url.pathname.startsWith('/media/')) return getMedia(env, url.pathname.slice(7), cors);
       if (request.method === 'POST' && url.pathname === '/publish') return json(await publish(await request.json(), env));
+      if (request.method === 'POST' && url.pathname === '/publish/status') return json(await publishStatus(await request.json()));
       if (url.pathname === '/') return json({ ok: true, service: 'crosspost' });
       return json({ error: 'Not found' }, 404);
     } catch (e) {
@@ -161,8 +163,6 @@ async function getMedia(env, key, cors) {
 }
 
 // ---------- publishing ----------
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
 async function publish({ platform, access_token, account_id, title, caption, video_url }, env) {
   if (!access_token || !video_url) throw new Error('access_token and video_url are required');
 
@@ -174,16 +174,9 @@ async function publish({ platform, access_token, account_id, title, caption, vid
   if (platform === 'instagram') {
     if (!account_id) throw new Error('Instagram account ID is missing – connect Instagram again.');
     const container = await call(`${GRAPH}/${account_id}/media`, form({ media_type: 'REELS', video_url, caption: caption || '', access_token }));
-    // Instagram fetches and processes the video first.
-    for (let i = 0; i < 20; i++) {
-      const s = await call(`${GRAPH}/${container.id}?fields=status_code,status&access_token=${encodeURIComponent(access_token)}`);
-      if (s.status_code === 'FINISHED') break;
-      if (s.status_code === 'ERROR' || s.status_code === 'EXPIRED') throw new Error(`Instagram could not process the video: ${s.status || s.status_code}`);
-      await sleep(3000);
-    }
-    const media = await call(`${GRAPH}/${account_id}/media_publish`, form({ creation_id: container.id, access_token }));
-    const info = await call(`${GRAPH}/${media.id}?fields=permalink&access_token=${encodeURIComponent(access_token)}`).catch(() => ({}));
-    return { id: media.id, url: info.permalink };
+    // Instagram fetches and processes the video first, which can take minutes.
+    // Instead of one long request the site asks POST /publish/status until it is done.
+    return { pending: true, container_id: container.id };
   }
 
   if (platform === 'tiktok') {
@@ -204,4 +197,18 @@ async function publish({ platform, access_token, account_id, title, caption, vid
   }
 
   throw new Error(`Publishing to ${platform} is not supported by this server`);
+}
+
+/** Instagram: check a Reel container; once Instagram has processed the video, publish it. */
+async function publishStatus({ platform, access_token, account_id, container_id }) {
+  if (platform !== 'instagram') throw new Error(`Status checks are not supported for ${platform}`);
+  if (!access_token || !account_id || !container_id) throw new Error('access_token, account_id and container_id are required');
+  const token = encodeURIComponent(access_token);
+  const s = await call(`${GRAPH}/${container_id}?fields=status_code,status&access_token=${token}`);
+  if (s.status_code === 'ERROR' || s.status_code === 'EXPIRED') throw new Error(`Instagram could not process the video: ${s.status || s.status_code}`);
+  if (s.status_code === 'PUBLISHED') return { already_published: true };
+  if (s.status_code !== 'FINISHED') return { pending: true, container_id, status: s.status_code };
+  const media = await call(`${GRAPH}/${account_id}/media_publish`, form({ creation_id: container_id, access_token }));
+  const info = await call(`${GRAPH}/${media.id}?fields=permalink&access_token=${token}`).catch(() => ({}));
+  return { id: media.id, url: info.permalink };
 }

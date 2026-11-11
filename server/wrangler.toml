@@ -14,3 +14,7 @@ TIKTOK_VERIFICATION_CONTENT = ""
 [[r2_buckets]]
 binding = "MEDIA"
 bucket_name = "crosspost-media"
+
+# Keep request logs (Workers Logs, included in the free plan) for debugging.
+[observability]
+enabled = true

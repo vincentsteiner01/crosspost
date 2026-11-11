@@ -17,6 +17,8 @@ export const hasFile = (postId: string) => files.has(postId);
 
 export class PublishError extends Error {}
 
+interface PublishReply { url?: string; id?: string; pending?: boolean; container_id?: string }
+
 /** Make sure the access token is still valid, refreshing it through our server when possible. */
 async function freshAuth(acc: Account) {
   const auth = acc.auth!;
@@ -136,7 +138,7 @@ export async function publishReal(acc: Account, post: Post, caption: string, onP
     if (!file) throw new PublishError('Das Video ist nicht mehr im Browser. Bitte die Datei erneut wählen.');
     videoUrl = await uploadToServer(post, file);
   }
-  const reply = await serverCall<{ url?: string; id?: string }>('/publish', {
+  let reply = await serverCall<PublishReply>('/publish', {
     platform: acc.platform,
     access_token: auth.accessToken,
     refresh_token: auth.refreshToken,
@@ -145,5 +147,17 @@ export async function publishReal(acc: Account, post: Post, caption: string, onP
     caption,
     video_url: videoUrl,
   });
+  // Instagram processes the video first (often a minute or more). Ask again in
+  // short requests – one long request gets cut off along the way.
+  for (let i = 0; reply.pending && i < 120; i++) {
+    await new Promise((r) => setTimeout(r, 5000));
+    reply = await serverCall<PublishReply>('/publish/status', {
+      platform: acc.platform,
+      access_token: auth.accessToken,
+      account_id: acc.auth.remoteId,
+      container_id: reply.container_id,
+    });
+  }
+  if (reply.pending) throw new PublishError('Instagram verarbeitet das Video nach 10 Minuten immer noch. Bitte später in Instagram nachsehen.');
   return reply.url;
 }
