@@ -53,16 +53,39 @@ export default {
   },
 };
 
+class UpstreamError extends Error {
+  constructor(message, detail) { super(message); this.detail = detail || {}; }
+}
+
+/** The address without anything secret in it, for logs. */
+const redact = (input) => {
+  try {
+    const u = new URL(typeof input === 'string' ? input : input.url);
+    for (const k of ['access_token', 'client_secret', 'code', 'fb_exchange_token', 'input_token', 'refresh_token']) if (u.searchParams.has(k)) u.searchParams.set(k, '…');
+    return u.toString();
+  } catch { return '?'; }
+};
+
 async function call(input, init) {
   const res = await fetch(input, init);
   const text = await res.text();
   let data;
-  try { data = JSON.parse(text); } catch { data = { raw: text }; }
-  if (!res.ok || data.error) {
-    const msg = data.error?.message || data.error_description || data.error?.code || data.error || data.message || `HTTP ${res.status}`;
-    throw new Error(typeof msg === 'string' ? msg : JSON.stringify(msg));
+  try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 300) }; }
+  const e = data.error;
+  // TikTok answers every request with an error object; code "ok" means success.
+  const failed = !res.ok || (e && !(typeof e === 'object' && e.code === 'ok'));
+  if (!failed) return data;
+  let msg;
+  if (e && typeof e === 'object') {
+    // Meta: error_user_title / error_user_msg explain the problem; code and subcode identify it.
+    msg = [e.error_user_title, e.error_user_msg || e.message].filter(Boolean).join(': ') || 'Unknown error';
+    const ids = [e.code != null && `code ${e.code}`, e.error_subcode && `subcode ${e.error_subcode}`].filter(Boolean).join(', ');
+    if (ids) msg += ` (${ids})`;
+  } else {
+    msg = data.error_description || e || data.message || data.raw || `HTTP ${res.status}`;
   }
-  return data;
+  console.log(JSON.stringify({ event: 'upstream_error', url: redact(input), status: res.status, error: e ?? data }));
+  throw new UpstreamError(typeof msg === 'string' ? msg : JSON.stringify(msg), typeof e === 'object' ? e : {});
 }
 
 const form = (values) => ({ method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(values) });
@@ -208,7 +231,21 @@ async function publishStatus({ platform, access_token, account_id, container_id 
   if (s.status_code === 'ERROR' || s.status_code === 'EXPIRED') throw new Error(`Instagram could not process the video: ${s.status || s.status_code}`);
   if (s.status_code === 'PUBLISHED') return { already_published: true };
   if (s.status_code !== 'FINISHED') return { pending: true, container_id, status: s.status_code };
-  const media = await call(`${GRAPH}/${account_id}/media_publish`, form({ creation_id: container_id, access_token }));
+
+  const publishOnce = () => call(`${GRAPH}/${account_id}/media_publish`, form({ creation_id: container_id, access_token }));
+  let media;
+  try {
+    media = await publishOnce();
+  } catch (err) {
+    // Meta sometimes reports an error although the Reel went out – look before giving up.
+    const after = await call(`${GRAPH}/${container_id}?fields=status_code&access_token=${token}`).catch(() => ({}));
+    if (after.status_code === 'PUBLISHED') return { already_published: true };
+    // Temporary errors (Meta marks them is_transient, or code 1/2/-1): one more try.
+    const d = err.detail || {};
+    if (!(d.is_transient || [1, 2, -1].includes(d.code))) throw err;
+    await new Promise((r) => setTimeout(r, 4000));
+    media = await publishOnce();
+  }
   const info = await call(`${GRAPH}/${media.id}?fields=permalink&access_token=${token}`).catch(() => ({}));
   return { id: media.id, url: info.permalink };
 }
