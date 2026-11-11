@@ -181,7 +181,28 @@ async function findInstagramAccounts(token, env) {
     const node = await attempt(`node_${id}`, `${GRAPH}/${id}?fields=id,username&access_token=${t}`);
     if (node?.username) found.push({ id: node.id, username: node.username });
   }
-  return { accounts: found, via: 'granular_scopes', diag };
+  if (found.length) return { accounts: found, via: 'granular_scopes', diag };
+
+  // 3. Instagram accounts owned by the business the token belongs to.
+  const me = await attempt('me', `${GRAPH}/me?fields=id,client_business_id&access_token=${t}`);
+  diag.me = me ? { id: me.id, client_business_id: me.client_business_id } : diag.me;
+  const igOnly = (list) => (list?.data || []).filter((a) => a.id && a.username).map((a) => ({ id: a.id, username: a.username }));
+  if (me?.client_business_id) {
+    for (const edge of ['instagram_business_accounts', 'owned_instagram_accounts']) {
+      const r = await attempt(edge, `${GRAPH}/${me.client_business_id}/${edge}?fields=id,username&access_token=${t}`);
+      if (r) diag[edge] = (r.data || []).map((a) => a.id);
+      if (igOnly(r).length) return { accounts: igOnly(r), via: edge, diag };
+    }
+  }
+
+  // 4. The Instagram account behind Facebook Pages assigned to the token (account linked to a Page).
+  for (const edge of ['assigned_pages', 'accounts']) {
+    const r = await attempt(edge, `${GRAPH}/me/${edge}?fields=id,instagram_business_account{id,username}&access_token=${t}`);
+    const viaPage = (r?.data || []).map((p) => p.instagram_business_account).filter((a) => a?.id && a.username);
+    if (r) diag[edge] = (r.data || []).map((p) => ({ page: p.id, ig: p.instagram_business_account?.id || null }));
+    if (viaPage.length) return { accounts: viaPage.map((a) => ({ id: a.id, username: a.username })), via: edge, diag };
+  }
+  return { accounts: [], via: null, diag };
 }
 
 async function refresh({ platform, refresh_token }, env) {
