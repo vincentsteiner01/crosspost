@@ -3,7 +3,7 @@
 // with the server, hands workflows over and reads back what they picked up.
 import { integrations } from './config';
 import * as store from './store';
-import type { Account, DeliveryStatus, Post, Workflow } from './store';
+import type { Account, CloudAccount, CloudWorkflow, DeliveryStatus, Post, Workflow } from './store';
 
 const keyName = () => `crosspost:server:${(store.currentUser()?.email ?? '').toLowerCase()}`;
 const getKey = () => { try { return localStorage.getItem(keyName()); } catch { return null; } };
@@ -52,26 +52,49 @@ async function api<T>(path: string, method = 'GET', body?: unknown): Promise<T> 
 /** Runs on the server: the source is Instagram, connected for real. */
 export function runsOnServer(w: Workflow) {
   const src = store.account(w.sourceId);
-  return !!serverUrl() && src?.platform === 'instagram' && !!src.auth;
+  return !!serverUrl() && src?.platform === 'instagram' && store.isLive(src);
 }
 
-/** Hand the server-side workflows and the sign-ins of connected accounts (for workflows and planned posts) to the server. */
-export async function syncNow() {
+/** Sign this browser in with a one-time code from a link (e.g. the one the iPhone Shortcut opens). */
+export async function linkWithCode(code: string) {
+  const res = await fetch(`${serverUrl()}/api/link`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code }) });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.key) throw new Error(data.error || `Server answered ${res.status}`);
+  setKey(data.key);
+}
+
+let syncing: Promise<void> | null = null;
+/**
+ * Every device shows the same accounts and workflows. First take over what other
+ * devices did, then hand over this device's sign-ins, workflows and removals.
+ */
+export function syncNow(): Promise<void> {
+  syncing ??= doSync().finally(() => { syncing = null; });
+  return syncing;
+}
+
+async function doSync() {
   if (!serverUrl()) return;
+  if (!getKey() && !store.accounts().some((a) => a.auth)) return; // nothing to sign in with yet
+  const st = await api<{ accounts: CloudAccount[]; workflows: (CloudWorkflow & { last_checked: number | null; last_error: string | null })[] }>('/api/state');
+  store.mergeCloudState(st.accounts, st.workflows);
+  flowState = new Map(st.workflows.map((w) => [w.id, { id: w.id, active: w.active ? 1 : 0, last_checked: w.last_checked, last_error: w.last_error }]));
   const flows = store.workflows().filter(runsOnServer);
   const live = store.accounts().filter((a) => a.auth);
-  if (!live.length) return;
-  const accounts = live.slice(0, 15).map((a) => ({
+  const removed = store.pendingRemovals();
+  const accounts = live.slice(0, 25).map((a) => ({
     id: a.id, platform: a.platform, handle: a.handle, remote_id: a.auth!.remoteId,
     access_token: a.auth!.accessToken, refresh_token: a.auth!.refreshToken, expires_at: a.auth!.expiresAt,
   }));
   await api('/api/sync', 'PUT', {
     accounts,
+    removed,
     workflows: flows.map((w) => ({
       id: w.id, name: w.name, source_id: w.sourceId, destination_ids: w.destinationIds, active: w.active, auto_publish: w.autoPublish,
       caption_template: w.captionTemplate, hashtags: w.hashtags, delay_minutes: w.delayMinutes,
     })),
   });
+  store.markSynced(accounts.map((a) => a.id), flows.map((w) => w.id), removed);
 }
 
 let syncTimer: number | undefined;
@@ -89,23 +112,40 @@ export async function listInstagramVideos(accountId: string, after?: string) {
   return api<{ videos: InstagramVideo[]; next: string | null }>(`/api/instagram/media?account=${encodeURIComponent(accountId)}${after ? `&after=${encodeURIComponent(after)}` : ''}`);
 }
 
-/** Keep a file on the server until its planned time. */
-export async function uploadForLater(file: File): Promise<string> {
-  const res = await authedFetch(`/media?purpose=schedule&name=${encodeURIComponent(file.name)}`, { method: 'PUT', headers: { 'Content-Type': file.type || 'video/mp4' }, body: file });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok || !data.key) throw new Error(data.error || 'The video could not be uploaded to the server.');
+/** Cloudflare takes at most 100 MB per request on the free plan. */
+export const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
+
+/** Put a file on the server (kept until every platform has it); reports progress in percent. */
+export async function uploadForLater(file: File, onProgress?: (pct: number) => void): Promise<string> {
+  if (file.size > MAX_UPLOAD_BYTES) throw new Error(`The video is ${Math.round(file.size / 1048576)} MB; the server takes up to 100 MB. Export it a little smaller (e.g. 1080p) and try again.`);
+  const send = (key: string) => new Promise<{ status: number; body: string }>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('PUT', `${serverUrl()}/media?purpose=schedule&name=${encodeURIComponent(file.name)}`);
+    xhr.setRequestHeader('Authorization', `Bearer ${key}`);
+    xhr.setRequestHeader('Content-Type', file.type || 'video/mp4');
+    xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress?.(Math.round((e.loaded / e.total) * 100)); };
+    xhr.onload = () => resolve({ status: xhr.status, body: xhr.responseText });
+    xhr.onerror = () => reject(new Error('The connection to the server broke off during the upload.'));
+    xhr.send(file);
+  });
+  let res = await send(await sessionKey());
+  if (res.status === 401) { setKey(null); res = await send(await sessionKey()); }
+  const data = (() => { try { return JSON.parse(res.body); } catch { return {}; } })();
+  if (res.status === 413) throw new Error('The video is too big for the server (max. 100 MB).');
+  if (res.status < 200 || res.status >= 300 || !data.key) throw new Error(data.error || 'The video could not be uploaded to the server.');
   return data.key;
 }
 
-export type PostSource = { type: 'upload'; key: string; thumbnail_url?: string } | { type: 'instagram'; account_id: string; media_id: string; permalink?: string; thumbnail_url?: string };
+export type PostSource = { type: 'upload'; key: string; thumbnail_url?: string } | { type: 'inbox'; id: string; thumbnail_url?: string } | { type: 'instagram'; account_id: string; media_id: string; permalink?: string; thumbnail_url?: string };
 export interface ServerDelivery { account_id: string; caption: string; options?: Record<string, unknown> }
 
 /** The server publishes at scheduled_at, also while this page is closed. */
 export async function planServerPost(body: { title: string; caption: string; source: PostSource; scheduled_at: number; draft: boolean; deliveries: ServerDelivery[] }) {
   await syncNow();
   const r = await api<{ id: string; scheduled_at: number }>('/api/posts', 'POST', body);
-  if (!body.draft && r.scheduled_at <= Date.now() + 5000) await api('/api/tick', 'POST').catch(() => {});
   await refreshServerPosts().catch(() => {});
+  // Publishing can take a while (YouTube uploads): let it run, the content list follows along.
+  if (!body.draft && r.scheduled_at <= Date.now() + 5000) api('/api/tick', 'POST').then(() => refreshServerPosts()).catch(() => {});
   return r;
 }
 
@@ -143,6 +183,8 @@ export async function refreshServerPosts() {
 
 /** While the page is open, move due jobs along faster than the 5-minute cron. */
 export async function serverHeartbeat() {
+  if (!getKey()) return;
+  await refreshInbox().catch(() => {});
   await refreshServerPosts();
   const now = Date.now();
   const busy = store.allPosts().some((p) => p.remote && p.deliveries.some((d) => d.status === 'publishing' || (d.status === 'scheduled' && p.scheduledAt <= now)));
@@ -164,3 +206,26 @@ export async function itemAction(itemId: string, action: 'approve' | 'retry' | '
   if (action !== 'delete') await api('/api/tick', 'POST').catch(() => {});
   await refreshServerPosts();
 }
+
+// ---------- inbox: videos shared from the iPhone ----------
+export interface InboxItem { id: string; name: string; type: string; size: number; created_at: number; url: string }
+let inbox: InboxItem[] = [];
+export const inboxItems = () => inbox;
+
+export async function refreshInbox() {
+  if (!serverUrl() || !getKey()) return inbox;
+  const data = await api<{ items: InboxItem[] }>('/api/inbox');
+  const changed = JSON.stringify(data.items) !== JSON.stringify(inbox);
+  inbox = data.items;
+  if (changed) store.notify();
+  return inbox;
+}
+
+export async function deleteInboxItem(id: string) {
+  await api(`/api/inbox/${encodeURIComponent(id)}`, 'DELETE');
+  await refreshInbox();
+}
+
+/** A key for the iPhone Shortcut; a new key ends the previous one. */
+export const createShortcutKey = () => api<{ key: string }>('/api/shortcut-key', 'POST').then((r) => r.key);
+export const inboxEndpoint = () => `${serverUrl()}/api/inbox`;

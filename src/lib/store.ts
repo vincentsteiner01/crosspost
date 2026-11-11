@@ -4,11 +4,16 @@ import type { PlatformId } from './platforms';
 export interface User { name: string; email: string; passwordHash?: string; method: string; timezone: string; createdAt: number }
 /** Sign-in result from the platform; absent for demo connections. */
 export interface AccountAuth { accessToken: string; refreshToken?: string; expiresAt?: number; remoteId?: string; scope?: string }
-export interface Account { id: string; platform: PlatformId; handle: string; connectedAt: number; auth?: AccountAuth }
+/** cloud: the server has this account's sign-in (maybe connected on another device), so it can post through the server. */
+export interface Account { id: string; platform: PlatformId; handle: string; connectedAt: number; auth?: AccountAuth; cloud?: boolean }
+/** Posts for real: signed in here, or through the server. */
+export const isLive = (a?: Account) => !!(a && (a.auth || a.cloud));
+/** synced: the server has it; dirty: changed here since the last sync. */
 export interface Workflow {
   id: string; name: string; sourceId: string; destinationIds: string[];
   active: boolean; autoPublish: boolean; captionTemplate: string; hashtags: string;
   removeWatermark: boolean; delayMinutes: number; createdAt: number; runs: number;
+  synced?: boolean; dirty?: boolean;
 }
 /** 'handed-over': uploaded and waiting on the platform's own schedule (YouTube publishAt). */
 export type DeliveryStatus = 'scheduled' | 'publishing' | 'published' | 'handed-over' | 'failed' | 'draft';
@@ -44,7 +49,8 @@ export interface Post {
 
 const KEY = 'crosspost:v1';
 
-interface Db { users: User[]; session: string | null; accounts: Record<string, Account[]>; workflows: Record<string, Workflow[]>; posts: Record<string, Post[]> }
+interface Removed { accounts: string[]; workflows: string[] }
+interface Db { users: User[]; session: string | null; accounts: Record<string, Account[]>; workflows: Record<string, Workflow[]>; posts: Record<string, Post[]>; removed?: Record<string, Removed> }
 
 function load(): Db {
   try {
@@ -56,6 +62,8 @@ function load(): Db {
 
 let db = load();
 const listeners = new Set<() => void>();
+/** Tell the views something changed that isn't stored here (e.g. the inbox). */
+export const notify = () => listeners.forEach((l) => l());
 
 function save() {
   try {
@@ -120,7 +128,12 @@ export function connectAccount(platform: PlatformId, handle: string, auth?: Acco
   return a;
 }
 
+const removed = (): Removed => (db.removed ??= {})[me()] ??= { accounts: [], workflows: [] };
+
 export function disconnectAccount(id: string) {
+  const a = account(id);
+  // Tell the server on the next sync, so the account goes on every device.
+  if (a?.auth || a?.cloud) removed().accounts.push(id);
   db.accounts[me()] = accounts().filter((a) => a.id !== id);
   for (const w of workflows()) {
     w.destinationIds = w.destinationIds.filter((d) => d !== id);
@@ -130,13 +143,62 @@ export function disconnectAccount(id: string) {
 }
 
 export function saveWorkflow(w: Workflow) {
+  w.dirty = true;
   const list = workflows();
   const i = list.findIndex((x) => x.id === w.id);
   if (i >= 0) list[i] = w; else list.unshift(w);
   save();
 }
 
-export function deleteWorkflow(id: string) { db.workflows[me()] = workflows().filter((w) => w.id !== id); save(); }
+export function deleteWorkflow(id: string) {
+  if (workflows().find((w) => w.id === id)?.synced) removed().workflows.push(id);
+  db.workflows[me()] = workflows().filter((w) => w.id !== id);
+  save();
+}
+
+// ---------- the same accounts and workflows on every device ----------
+export interface CloudAccount { id: string; platform: PlatformId; handle: string | null; remote_id: string | null; updated_at: number | null }
+export interface CloudWorkflow { id: string; name: string; source_id: string; destination_ids: string[]; active: boolean; auto_publish: boolean; caption_template: string | null; hashtags: string | null; delay_minutes: number }
+
+export const pendingRemovals = (): Removed => ({ accounts: [...removed().accounts], workflows: [...removed().workflows] });
+
+/** Take over what the server knows; things another device removed go here too. */
+export function mergeCloudState(cloudAccounts: CloudAccount[], cloudFlows: CloudWorkflow[]) {
+  const ids = new Set(cloudAccounts.map((a) => a.id));
+  const gone = removed();
+  // Removed elsewhere: was on the server before, isn't now.
+  db.accounts[me()] = accounts().filter((a) => !a.cloud || ids.has(a.id));
+  for (const c of cloudAccounts) {
+    if (gone.accounts.includes(c.id)) continue;
+    const local = account(c.id);
+    if (local) { local.cloud = true; if (!local.handle && c.handle) local.handle = c.handle; }
+    else accounts().push({ id: c.id, platform: c.platform, handle: c.handle || c.platform, connectedAt: c.updated_at || Date.now(), cloud: true });
+  }
+  const flowIds = new Set(cloudFlows.map((w) => w.id));
+  db.workflows[me()] = workflows().filter((w) => !w.synced || flowIds.has(w.id));
+  for (const c of cloudFlows) {
+    if (gone.workflows.includes(c.id)) continue;
+    const local = workflows().find((w) => w.id === c.id);
+    if (local?.dirty) continue; // changed here; this device's version goes up next
+    const w: Workflow = {
+      id: c.id, name: c.name, sourceId: c.source_id, destinationIds: c.destination_ids, active: c.active, autoPublish: c.auto_publish,
+      captionTemplate: c.caption_template ?? '{caption}', hashtags: c.hashtags ?? '', delayMinutes: c.delay_minutes,
+      removeWatermark: local?.removeWatermark ?? true, createdAt: local?.createdAt ?? Date.now(), runs: local?.runs ?? 0, synced: true, dirty: false,
+    };
+    if (local) Object.assign(local, w); else workflows().unshift(w);
+  }
+  save();
+}
+
+/** The server took these: mark them, and forget the removals it has carried out. */
+export function markSynced(accountIds: string[], flowIds: string[], sent: Removed) {
+  for (const a of accounts()) if (accountIds.includes(a.id)) a.cloud = true;
+  for (const w of workflows()) if (flowIds.includes(w.id)) { w.synced = true; w.dirty = false; }
+  const r = removed();
+  r.accounts = r.accounts.filter((id) => !sent.accounts.includes(id));
+  r.workflows = r.workflows.filter((id) => !sent.workflows.includes(id));
+  save();
+}
 
 export function savePost(p: Post) {
   const list = posts();

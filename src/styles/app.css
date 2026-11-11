@@ -255,6 +255,9 @@ a.thumb { text-decoration: none; }
   .post-detail { grid-template-columns: 1fr; }
   .detail-media { position: static; max-width: 360px; width: 100%; margin: 0 auto; }
 }
+.shortcut-steps { margin-top: 14px; padding: 16px; border-radius: 12px; background: #f7f7fa; }
+.shortcut-steps .copy-row .input { flex: 1; font-size: 13px; }
+.steps-list { margin: 4px 0 0; padding-left: 20px; display: grid; gap: 8px; color: #1f2430; line-height: 1.5; }
 @media (max-width: 1100px) {
   .composer { grid-template-columns: 1fr; }
   .sticky { position: static; }

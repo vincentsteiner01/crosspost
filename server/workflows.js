@@ -3,7 +3,12 @@
 //
 // API (everything except /api/session needs "Authorization: Bearer <session key>"):
 //   POST   /api/session               prove a connected account, get a session key
-//   PUT    /api/sync                  the site hands over its workflows and the accounts they use
+//   PUT    /api/sync                  a device hands over its sign-ins and workflows (adds and updates; removes only what it names)
+//   GET    /api/state                 accounts (without sign-ins) and workflows, for every device
+//   POST   /api/inbox                 send a video in (raw body), e.g. from the iPhone share menu; answers with a link to post it
+//   GET    /api/inbox, DELETE /api/inbox/:id
+//   POST   /api/shortcut-key          a key for the iPhone Shortcut (replaces the previous one)
+//   POST   /api/link                  { code } → session key; one-time codes come with the inbox link
 //   GET    /api/posts                 videos the workflows picked up, with one job per destination
 //   POST   /api/workflows/:id/run     check the source now (takes the newest video if nothing is new)
 //   POST   /api/posts                 plan a post: an uploaded file or an existing Instagram video, to many accounts
@@ -15,8 +20,9 @@
 // Cron (wrangler.toml [triggers]): check the sources and publish what is due.
 //
 // Needs the bindings DB (D1) and MEDIA (R2), the secret TOKEN_KEY (32 random
-// bytes, base64; encrypts the stored sign-ins) and the var PUBLIC_URL (this
-// worker's address – TikTok fetches videos from there).
+// bytes, base64; encrypts the stored sign-ins) and the vars PUBLIC_URL (this
+// worker's address – TikTok fetches videos from there) and SITE_URL (the app's
+// address, for links the inbox hands out).
 
 const DESTINATIONS = ['youtube', 'tiktok', 'instagram', 'facebook'];
 const CAPTION_LIMITS = { tiktok: 2200, instagram: 2200, youtube: 5000, facebook: 63206 };
@@ -148,16 +154,47 @@ export function workflowEngine({ call, publish, publishStatus, refresh, GRAPH, T
       // Two devices at the same moment: the first one wins.
       userId = (await D.prepare('SELECT user_id FROM identities WHERE key = ?').bind(identity).first()).user_id;
     }
+    return { key: await newSession(env, userId, 'web') };
+  }
+
+  async function newSession(env, userId, label) {
     const key = hex(crypto.getRandomValues(new Uint8Array(32)));
-    await D.prepare('INSERT INTO sessions (key_hash, user_id, created_at) VALUES (?, ?, ?)').bind(await sha256(key), userId, now()).run();
-    return { key };
+    await db(env).prepare('INSERT INTO sessions (key_hash, user_id, created_at, label) VALUES (?, ?, ?, ?)').bind(await sha256(key), userId, now(), label).run();
+    return key;
+  }
+
+  /** One-time code for a link that signs a browser in (15 minutes). */
+  async function newLinkCode(env, userId) {
+    const code = hex(crypto.getRandomValues(new Uint8Array(24)));
+    await db(env).prepare('INSERT INTO link_codes (code_hash, user_id, expires_at) VALUES (?, ?, ?)').bind(await sha256(code), userId, now() + 15 * 60_000).run();
+    return code;
+  }
+
+  async function useLinkCode(body, env) {
+    const D = db(env);
+    const code = String(body?.code || '');
+    if (!/^[0-9a-f]{48}$/.test(code)) throw new HttpError(400, 'This link is not valid.');
+    const hash = await sha256(code);
+    const row = await D.prepare('SELECT user_id, expires_at FROM link_codes WHERE code_hash = ?').bind(hash).first();
+    await D.prepare('DELETE FROM link_codes WHERE code_hash = ? OR expires_at < ?').bind(hash, now()).run();
+    if (!row || row.expires_at < now()) throw new HttpError(400, 'This link has expired – share the video again or connect Instagram on this device.');
+    return { key: await newSession(env, row.user_id, 'web') };
+  }
+
+  async function shortcutKey(userId, env) {
+    // One Shortcut key at a time: a new one ends the old one.
+    await db(env).prepare("DELETE FROM sessions WHERE user_id = ? AND label = 'shortcut'").bind(userId).run();
+    return { key: await newSession(env, userId, 'shortcut') };
   }
 
   // ---------- the site hands over workflows and accounts ----------
   async function sync(userId, body, env) {
     const D = db(env);
-    const accounts = (Array.isArray(body?.accounts) ? body.accounts : []).filter((a) => a?.id && a.platform && a.access_token).slice(0, 15);
-    const workflows = (Array.isArray(body?.workflows) ? body.workflows : []).filter((w) => w?.id && w.source_id && Array.isArray(w.destination_ids)).slice(0, 15);
+    const accounts = (Array.isArray(body?.accounts) ? body.accounts : []).filter((a) => a?.id && a.platform && a.access_token).slice(0, 25);
+    const workflows = (Array.isArray(body?.workflows) ? body.workflows : []).filter((w) => w?.id && w.source_id && Array.isArray(w.destination_ids)).slice(0, 25);
+    const ids = (list) => (Array.isArray(list) ? list.filter((x) => typeof x === 'string' && x.length <= 64).slice(0, 50) : []);
+    const removedAccounts = ids(body?.removed?.accounts);
+    const removedFlows = ids(body?.removed?.workflows);
     const oldAccounts = new Map((await D.prepare('SELECT id, expires_at FROM accounts WHERE user_id = ?').bind(userId).all()).results.map((r) => [r.id, r]));
     const oldFlows = new Map((await D.prepare('SELECT id, active, active_since FROM workflows WHERE user_id = ?').bind(userId).all()).results.map((r) => [r.id, r]));
     const t = now();
@@ -178,9 +215,8 @@ export function workflowEngine({ call, publish, publishStatus, refresh, GRAPH, T
           expires_at = excluded.expires_at, updated_at = excluded.updated_at`)
         .bind(userId, a.id, a.platform, a.handle || null, a.remote_id || null, await seal(env, a.access_token), await seal(env, a.refresh_token), expires, t));
     }
-    // Disconnected on the site: forget the sign-in here too.
-    const keepAccounts = new Set(accounts.map((a) => a.id));
-    for (const id of oldAccounts.keys()) if (!keepAccounts.has(id)) stmts.push(D.prepare('DELETE FROM accounts WHERE user_id = ? AND id = ?').bind(userId, id));
+    // Each device sends what it knows; only what it explicitly removed goes (another device may know more).
+    for (const id of removedAccounts) stmts.push(D.prepare('DELETE FROM accounts WHERE user_id = ? AND id = ?').bind(userId, id));
 
     for (const w of workflows) {
       const prev = oldFlows.get(w.id);
@@ -195,11 +231,54 @@ export function workflowEngine({ call, publish, publishStatus, refresh, GRAPH, T
         .bind(userId, w.id, String(w.name || '').slice(0, 120), w.source_id, JSON.stringify(w.destination_ids.slice(0, 20)), active, w.auto_publish === false ? 0 : 1,
           String(w.caption_template ?? '{caption}').slice(0, 3000), String(w.hashtags || '').slice(0, 1000), Math.max(0, Math.min(10080, Number(w.delay_minutes) || 0)), since));
     }
-    const keepFlows = new Set(workflows.map((w) => w.id));
-    for (const id of oldFlows.keys()) if (!keepFlows.has(id)) stmts.push(D.prepare('DELETE FROM workflows WHERE user_id = ? AND id = ?').bind(userId, id));
+    for (const id of removedFlows) stmts.push(D.prepare('DELETE FROM workflows WHERE user_id = ? AND id = ?').bind(userId, id));
 
     if (stmts.length) await D.batch(stmts);
     return { ok: true, accounts: accounts.length, workflows: workflows.length };
+  }
+
+  /** What every device should show: accounts (never their sign-ins) and workflows. */
+  async function state(userId, env) {
+    const D = db(env);
+    const accounts = (await D.prepare('SELECT id, platform, handle, remote_id, expires_at, refresh_token IS NOT NULL AS renewable, updated_at FROM accounts WHERE user_id = ? ORDER BY updated_at').bind(userId).all()).results;
+    const workflows = (await D.prepare('SELECT id, name, source_id, destination_ids, active, auto_publish, caption_template, hashtags, delay_minutes, last_checked, last_error FROM workflows WHERE user_id = ?').bind(userId).all()).results;
+    return {
+      accounts: accounts.map((a) => ({ ...a, renewable: !!a.renewable })),
+      workflows: workflows.map((w) => ({ ...w, destination_ids: JSON.parse(w.destination_ids || '[]'), active: !!w.active, auto_publish: !!w.auto_publish })),
+    };
+  }
+
+  // ---------- inbox: videos sent in, waiting to be posted ----------
+  async function addToInbox(userId, request, url, env) {
+    if (!env.SITE_URL) throw new Error('Server setting SITE_URL is missing');
+    const name = (url.searchParams.get('name') || 'video.mp4').replace(/[^\w.-]+/g, '_').slice(-80);
+    const type = (request.headers.get('Content-Type') || '').split(';')[0].trim();
+    const mediaType = /^video\//.test(type) ? type : 'video/mp4';
+    const id = newId();
+    const key = `inbox/${id}-${name}`;
+    // R2 needs to know the length up front; without it, read the body first (Workers allow 100 MB per request).
+    const length = Number(request.headers.get('Content-Length'));
+    const body = length > 0 ? request.body : await request.arrayBuffer();
+    const put = await env.MEDIA.put(key, body, { httpMetadata: { contentType: mediaType } });
+    const size = put?.size ?? (length > 0 ? length : body.byteLength);
+    if (!size) { await env.MEDIA.delete(key).catch(() => {}); throw new HttpError(400, 'No video arrived – share the video file itself.'); }
+    await db(env).prepare('INSERT INTO inbox (id, user_id, r2_key, name, type, size, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)').bind(id, userId, key, name, mediaType, size, now()).run();
+    const code = await newLinkCode(env, userId);
+    return { id, open_url: `${env.SITE_URL.replace(/\/?$/, '/')}#/create?inbox=${id}&link=${code}` };
+  }
+
+  async function listInbox(userId, env) {
+    const rows = (await db(env).prepare('SELECT id, r2_key, name, type, size, created_at FROM inbox WHERE user_id = ? ORDER BY created_at DESC LIMIT 50').bind(userId).all()).results;
+    return { items: rows.map(({ r2_key, ...r }) => ({ ...r, url: `${publicUrl(env)}/media/${r2_key}` })) };
+  }
+
+  async function removeFromInbox(userId, id, env) {
+    const D = db(env);
+    const row = await D.prepare('SELECT r2_key FROM inbox WHERE user_id = ? AND id = ?').bind(userId, id).first();
+    if (!row) throw new HttpError(404, 'Not found');
+    await D.prepare('DELETE FROM inbox WHERE user_id = ? AND id = ?').bind(userId, id).run();
+    await env.MEDIA.delete(row.r2_key).catch(() => {});
+    return { deleted: true };
   }
 
   // ---------- reading back ----------
@@ -453,8 +532,16 @@ export function workflowEngine({ call, publish, publishStatus, refresh, GRAPH, T
     const t = now();
     const at = Math.max(t, Number(body.scheduled_at) || t);
     let item;
-    if (src.type === 'upload') {
-      if (!/^(sched|tmp)\/[\w.-]+$/.test(src.key || '') || !await env.MEDIA.head(src.key)) throw new Error('The uploaded video was not found – upload it again.');
+    const stmts = [];
+    if (src.type === 'inbox') {
+      const row = await D.prepare('SELECT r2_key FROM inbox WHERE user_id = ? AND id = ?').bind(userId, String(src.id || '')).first();
+      if (!row || !await env.MEDIA.head(row.r2_key)) throw new Error('This video is no longer in your inbox.');
+      // The post takes over the file; it leaves the inbox.
+      stmts.push(D.prepare('DELETE FROM inbox WHERE user_id = ? AND id = ?').bind(userId, String(src.id)));
+      const thumb = typeof src.thumbnail_url === 'string' && src.thumbnail_url.length < 40_000 && /^data:image\/jpeg;base64,[\w+/=]+$/.test(src.thumbnail_url) ? src.thumbnail_url : null;
+      item = { kind: 'upload', media: itemId, r2: row.r2_key, copied: t, account: null, permalink: null, thumb };
+    } else if (src.type === 'upload') {
+      if (!/^(sched|tmp|inbox)\/[\w.-]+$/.test(src.key || '') || !await env.MEDIA.head(src.key)) throw new Error('The uploaded video was not found – upload it again.');
       // A small JPEG frame from the site, for the content list.
       const thumb = typeof src.thumbnail_url === 'string' && src.thumbnail_url.length < 40_000 && /^data:image\/jpeg;base64,[\w+/=]+$/.test(src.thumbnail_url) ? src.thumbnail_url : null;
       item = { kind: 'upload', media: itemId, r2: src.key, copied: t, account: null, permalink: null, thumb };
@@ -464,9 +551,9 @@ export function workflowEngine({ call, publish, publishStatus, refresh, GRAPH, T
       item = { kind: 'instagram', media: String(src.media_id), r2: null, copied: null, account: src.account_id, permalink: https(src.permalink), thumb: https(src.thumbnail_url) };
     } else throw new Error('Add a video first.');
 
-    const stmts = [D.prepare(`INSERT INTO items (id, user_id, workflow_id, kind, source_media_id, source_account_id, title, caption, permalink, thumbnail_url, r2_key, copied_at, created_at)
+    stmts.push(D.prepare(`INSERT INTO items (id, user_id, workflow_id, kind, source_media_id, source_account_id, title, caption, permalink, thumbnail_url, r2_key, copied_at, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .bind(itemId, userId, itemId, item.kind, item.media, item.account, String(body.title || '').slice(0, 200), String(body.caption || '').slice(0, 63206), item.permalink, item.thumb, item.r2, item.copied, t)];
+      .bind(itemId, userId, itemId, item.kind, item.media, item.account, String(body.title || '').slice(0, 200), String(body.caption || '').slice(0, 63206), item.permalink, item.thumb, item.r2, item.copied, t));
     for (const d of deliveries) {
       const platform = accounts.get(d.account_id) || 'unknown';
       let status = body.draft ? 'draft' : 'scheduled';
@@ -528,13 +615,20 @@ export function workflowEngine({ call, publish, publishStatus, refresh, GRAPH, T
     const m = request.method;
     if (!p.startsWith('/api/')) return undefined;
     if (m === 'POST' && p === '/api/session') return createSession(await request.json(), env);
+    if (m === 'POST' && p === '/api/link') return useLinkCode(await request.json(), env);
     const userId = await requireUser(request, env);
+    if (m === 'POST' && p === '/api/inbox') return addToInbox(userId, request, url, env);
+    if (m === 'GET' && p === '/api/inbox') return listInbox(userId, env);
+    if (m === 'GET' && p === '/api/state') return state(userId, env);
+    if (m === 'POST' && p === '/api/shortcut-key') return shortcutKey(userId, env);
     if (m === 'PUT' && p === '/api/sync') return sync(userId, await request.json(), env);
     if (m === 'GET' && p === '/api/posts') return listPosts(userId, env);
     if (m === 'POST' && p === '/api/tick') return { processed: await processDue(env, userId) };
     if (m === 'POST' && p === '/api/posts') return createPost(userId, await request.json(), env);
     if (m === 'GET' && p === '/api/instagram/media') return listInstagramMedia(userId, url, env);
-    let r = /^\/api\/workflows\/([\w-]{1,64})\/run$/.exec(p);
+    let r = /^\/api\/inbox\/([\w-]{1,64})$/.exec(p);
+    if (m === 'DELETE' && r) return removeFromInbox(userId, r[1], env);
+    r = /^\/api\/workflows\/([\w-]{1,64})\/run$/.exec(p);
     if (m === 'POST' && r) return runNow(userId, r[1], env);
     r = /^\/api\/items\/([\w-]{1,64})(?:\/(approve|retry))?$/.exec(p);
     if (r && ((m === 'POST' && r[2]) || (m === 'DELETE' && !r[2]))) return itemAction(userId, r[1], r[2] || 'delete', env);

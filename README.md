@@ -70,6 +70,14 @@ Workflows mit einer **Instagram-Quelle** laufen auf dem Server (`server/workflow
 - Die Seite übergibt Workflow und die nötigen Anmeldungen (`PUT /api/sync`); der Server speichert sie mit `TOKEN_KEY` verschlüsselt und erneuert abgelaufene Zugänge selbst.
 - Anmeldung am Server: Ein verbundenes Konto (Instagram, YouTube, TikTok oder Facebook) beweist, wer man ist. Uploads (`PUT /media`) gehen nur noch mit dieser Sitzung.
 
+### Mehrere Geräte und Teilen vom iPhone
+- Verbundene Konten und Workflows liegen auf dem Server; jedes Gerät holt sie sich (`GET /api/state`) und schickt nur, was es hat (`PUT /api/sync` ergänzt und ändert, entfernt nur ausdrücklich Entferntes).
+- **Eingang:** Ein iPhone-Kurzbefehl („An Crosspost senden“, Einrichtung unter Einstellungen) schickt das geteilte Video an `POST /api/inbox` und öffnet Crosspost mit dem Video in einem neuen Post. Der Link enthält einen Einmal-Code (15 Minuten), der den Browser anmeldet. Dateien liegen unter `inbox/` (Lebenszyklus 30 Tage):
+  ```
+  npx wrangler r2 bucket lifecycle add crosspost-media inbox-after-30-days inbox/ --expire-days 30
+  ```
+- Mit Server geht jeder echte Post mit Video über den Server – auch „Publish now“. Uploads bis 100 MB (Grenze von Cloudflare im kostenlosen Plan).
+
 ### Geplante Posts und ältere Instagram-Videos
 - **Planen:** Ein Post mit Video und „Schedule“ an echt verbundene Konten geht über den Server (`POST /api/posts`): Die Datei liegt bis zum Termin unter `sched/`, der Cron veröffentlicht pünktlich – auch wenn die Seite zu ist.
 - **Instagram-Videos nachträglich crossposten:** „Use a video already on Instagram“ im Erstellen-Bereich listet die Videos des Kontos (`GET /api/instagram/media`). Instagram gibt Videos mit lizenzierter Musik nicht zum Download frei; für die die Originaldatei hochladen.

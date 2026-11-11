@@ -10,7 +10,7 @@ import { canHandOver, handOverToYouTube, publishReal, rememberFile } from '../li
 import { defaultYouTubeOptions, type InstagramOptions, type TikTokOptions, type YouTubeOptions } from '../lib/store';
 import { url } from '../lib/paths';
 import { forgetAllVideos, forgetVideo, keepVideo, keptVideo, keptVideosUsage } from '../lib/videos';
-import { itemAction, listInstagramVideos, planServerPost, runServerWorkflow, runsOnServer, scheduleSync, serverHeartbeat, serverWorkflowState, syncNow, uploadForLater, type InstagramVideo, type PostSource } from '../lib/server';
+import { createShortcutKey, deleteInboxItem, hasServerSession, inboxEndpoint, inboxItems, itemAction, linkWithCode, listInstagramVideos, planServerPost, refreshInbox, runServerWorkflow, runsOnServer, scheduleSync, serverHeartbeat, serverWorkflowState, syncNow, uploadForLater, type InboxItem, type InstagramVideo, type PostSource } from '../lib/server';
 
 
 const root = document.getElementById('app')!;
@@ -103,6 +103,12 @@ function processQueue() {
         d.status = 'publishing';
         changed = true;
         const acc = store.account(d.accountId);
+        if (acc?.cloud && !acc.auth) {
+          d.status = 'failed';
+          d.error = 'This account is connected through the server; posts to it need a video and go through the server. Create the post again with a video.';
+          d.at = Date.now();
+          continue;
+        }
         if (acc?.auth) {
           const err = checkDelivery(d, post);
           (err ? Promise.reject(new Error(err)) : publishReal(acc, post, d.caption, progressReporter(d)))
@@ -161,6 +167,7 @@ const NAV = [
   { href: '#/', label: 'Dashboard', icon: icons.home },
   { href: '#/create', label: 'Create post', icon: icons.plus },
   { href: '#/workflows', label: 'Workflows', icon: icons.flow },
+  { href: '#/inbox', label: 'Inbox', icon: icons.upload },
   { href: '#/posts', label: 'Content', icon: icons.film },
   { href: '#/calendar', label: 'Calendar', icon: icons.calendar },
   { href: '#/accounts', label: 'Connected accounts', icon: icons.link },
@@ -173,7 +180,7 @@ function shell(title: string, body: string, route: string) {
   return `<div class="shell">
   <aside class="sidebar">
     <a class="brand" href="#/">${icons.logoMark}<span>Crosspost</span></a>
-    <nav class="nav">${NAV.map((n) => `<a href="${n.href}" class="${route === n.href ? 'active' : ''}">${n.icon}<span>${n.label}</span>${n.href === '#/posts' && pending ? `<span class="count">${pending}</span>` : ''}</a>`).join('')}</nav>
+    <nav class="nav">${NAV.map((n) => `<a href="${n.href}" class="${route === n.href ? 'active' : ''}">${n.icon}<span>${n.label}</span>${n.href === '#/posts' && pending ? `<span class="count">${pending}</span>` : ''}${n.href === '#/inbox' && inboxItems().length ? `<span class="count">${inboxItems().length}</span>` : ''}</a>`).join('')}</nav>
     <div class="side-foot">
       <a class="me" href="#/settings"><div class="avatar">${esc((u.name || 'C')[0]!.toUpperCase())}</div><div class="me-text"><b>${esc(u.name || 'Your Crosspost')}</b><small>${u.email === store.LOCAL_EMAIL ? 'Settings' : esc(u.email)}</small></div></a>
     </div>
@@ -258,6 +265,8 @@ interface Draft {
   yt: YouTubeOptions; insta: InstagramOptions; tt: TikTokOptions;
   /** A video already on Instagram, cross-posted through the server instead of a file. */
   ig?: { accountId: string; mediaId: string; permalink?: string };
+  /** A video shared in from the iPhone, waiting on the server. */
+  inbox?: { id: string };
   id: string; title: string; caption: string; file?: File; mediaUrl?: string; mediaName: string; mediaType: string; mediaSize: number; thumb?: string; selected: Set<string>; overrides: Record<string, string>; open: Set<string>; when: 'now' | 'later'; at: number }
 let draft: Draft | null = null;
 
@@ -275,14 +284,50 @@ function newDraft(editId?: string): Draft {
   return { yt: defaultYouTubeOptions(), insta: { trial: '' }, tt: { mode: 'inbox' }, id: store.uid(), title: '', caption: '', mediaName: '', mediaType: '', mediaSize: 0, selected: new Set(store.accounts().filter((a) => platform(a.platform).destination).map((a) => a.id)), overrides: {}, open: new Set(), when: 'now', at: Date.now() + 3600000 };
 }
 
+let inboxLoading: string | null = null;
+
+/** A video shared from the iPhone: sign in with the link's one-time code if needed, then put it into a new post. */
+async function openInboxVideo(id: string, code: string | null) {
+  inboxLoading = id;
+  render();
+  try {
+    if (code && !hasServerSession()) await linkWithCode(code);
+    // Drop the one-time code from the address, so a reload doesn't try it again.
+    history.replaceState(null, '', `#/create?inbox=${encodeURIComponent(id)}`);
+    await syncNow();
+    const item = (await refreshInbox()).find((x) => x.id === id);
+    if (!item) { toast('This video is no longer in your inbox'); location.hash = '#/inbox'; return; }
+    draft = inboxDraft(item);
+    makeThumb({ type: item.type }, item.url).then((t) => { if (draft?.inbox?.id === id && t) { draft.thumb = t; render(); } });
+  } catch (e) {
+    toast((e as Error).message);
+  } finally {
+    inboxLoading = null;
+    render();
+  }
+}
+
+function inboxDraft(item: InboxItem): Draft {
+  const d = newDraft();
+  Object.assign(d, { inbox: { id: item.id }, mediaUrl: item.url, mediaName: item.name, mediaType: item.type, mediaSize: item.size });
+  return d;
+}
+
 function viewCreate(params: URLSearchParams) {
   const editId = params.get('edit') ?? undefined;
-  if (!draft || (editId && draft.id !== editId) || (!editId && store.posts().some((p) => p.id === draft!.id))) draft = newDraft(editId);
+  const inboxId = params.get('inbox');
+  if (inboxId && draft?.inbox?.id !== inboxId && inboxLoading !== inboxId) {
+    const item = inboxItems().find((x) => x.id === inboxId);
+    if (item && !params.get('link')) draft = inboxDraft(item);
+    else queueMicrotask(() => openInboxVideo(inboxId, params.get('link')));
+  }
+  if (!draft || (editId && draft.id !== editId) || (!editId && !inboxId && store.posts().some((p) => p.id === draft!.id))) draft = newDraft(editId);
   const d = draft;
   const dests = store.accounts().filter((a) => platform(a.platform).destination);
   const ig = liveInstagram();
   const media = d.mediaName
-    ? `<div class="media-chosen"><div class="thumb">${d.thumb ? `<img src="${esc(d.thumb)}" alt="">` : icons.play}</div><div class="post-main"><b>${esc(d.mediaName)}</b><small>${d.ig ? `From Instagram${d.ig.permalink ? ` · <a href="${esc(d.ig.permalink)}" target="_blank" rel="noopener">open</a>` : ''}` : `${esc(d.mediaType || 'file')} · ${fmtSize(d.mediaSize)}`}</small></div><button class="btn small" data-action="${d.ig ? 'pick-ig' : 'pick-media'}">Replace</button><button class="icon-btn" data-action="clear-media" aria-label="Remove">${icons.trash}</button></div>`
+    ? `<div class="media-chosen"><div class="thumb">${d.thumb ? `<img src="${esc(d.thumb)}" alt="">` : icons.play}</div><div class="post-main"><b>${esc(d.mediaName)}</b><small>${d.ig ? `From Instagram${d.ig.permalink ? ` · <a href="${esc(d.ig.permalink)}" target="_blank" rel="noopener">open</a>` : ''}` : d.inbox ? `From your inbox · ${fmtSize(d.mediaSize)}` : `${esc(d.mediaType || 'file')} · ${fmtSize(d.mediaSize)}`}</small></div><button class="btn small" data-action="${d.ig ? 'pick-ig' : 'pick-media'}">Replace</button><button class="icon-btn" data-action="clear-media" aria-label="Remove">${icons.trash}</button></div>`
+    : inboxLoading ? `<div class="drop">${icons.upload}<b>Loading the video from your inbox…</b></div>`
     : `<label class="drop" id="drop">${icons.upload}<b>Drop a video or picture here</b><span>or click to choose a file · MP4, MOV, JPG, PNG</span></label>${ig ? `<button class="btn small" data-action="pick-ig" style="margin-top:10px">${badge('instagram', 18)}Use a video already on Instagram</button>` : ''}`;
   return shell(editId ? 'Edit post' : 'Create post', `
     <div class="composer">
@@ -316,7 +361,7 @@ function youtubeCard(d: Draft) {
   const yts = [...d.selected].map(store.account).filter((a) => a?.platform === 'youtube') as Account[];
   if (!yts.length) return '';
   const o = d.yt;
-  const live = yts.some((a) => a.auth);
+  const live = yts.some((a) => store.isLive(a));
   const opt = (v: string, label: string) => `<option value="${v}" ${o.privacy === v ? 'selected' : ''}>${label}</option>`;
   const cat = (v: string, label: string) => `<option value="${v}" ${o.categoryId === v ? 'selected' : ''}>${label}</option>`;
   return `<section class="card stack" id="yt-card">
@@ -334,7 +379,7 @@ function youtubeCard(d: Draft) {
 
 /** Instagram's own options; shown while an Instagram account connected for real is selected. */
 function instagramCard(d: Draft) {
-  if (![...d.selected].some((id) => { const a = store.account(id); return a?.platform === 'instagram' && a.auth; })) return '';
+  if (![...d.selected].some((id) => { const a = store.account(id); return a?.platform === 'instagram' && store.isLive(a); })) return '';
   const t = d.insta.trial;
   return `<section class="card stack" id="ig-card">
     <div><h2>${badge('instagram', 22)} Instagram</h2><p class="sub" style="margin:0">Posted as a Reel.</p></div>
@@ -345,7 +390,7 @@ function instagramCard(d: Draft) {
 
 /** How the video reaches TikTok; shown while a TikTok account connected for real is selected. */
 function tiktokCard(d: Draft) {
-  if (![...d.selected].some((id) => { const a = store.account(id); return a?.platform === 'tiktok' && a.auth; })) return '';
+  if (![...d.selected].some((id) => { const a = store.account(id); return a?.platform === 'tiktok' && store.isLive(a); })) return '';
   const radio = (v: TikTokOptions['mode'], title: string, text: string) => `<label class="check-row"><input type="radio" name="tt-mode" value="${v}" ${d.tt.mode === v ? 'checked' : ''}><span><b>${title}</b><small>${text}</small></span></label>`;
   return `<section class="card stack" id="tt-card">
     <div><h2>${badge('tiktok', 22)} TikTok</h2></div>
@@ -354,7 +399,7 @@ function tiktokCard(d: Draft) {
   </section>`;
 }
 
-const liveInstagram = () => (integrations().serverUrl ? store.accounts().find((a) => a.platform === 'instagram' && a.auth) : undefined);
+const liveInstagram = () => (integrations().serverUrl ? store.accounts().find((a) => a.platform === 'instagram' && store.isLive(a)) : undefined);
 
 function instagramPicker() {
   const acc = liveInstagram();
@@ -462,10 +507,11 @@ function savePostFromDraft(publish: boolean, force = false) {
       return;
     }
   }
-  // Planned posts and videos from Instagram go through the server: it publishes on time, also while this page is closed.
-  const live = [...d.selected].filter((id) => !!store.account(id)?.auth);
-  const viaServer = !!integrations().serverUrl && live.length > 0 && (!!d.ig || (publish && d.when === 'later' && d.mediaType.startsWith('video')));
-  if (d.ig && !viaServer) { toast('Choose at least one account connected for real'); return; }
+  // With a server, every real post with a video goes through it: it publishes on time,
+  // also while this page is closed, and for accounts connected on another device.
+  const live = [...d.selected].filter((id) => store.isLive(store.account(id)));
+  const viaServer = !!integrations().serverUrl && live.length > 0 && (!!d.ig || !!d.inbox || (publish && d.mediaType.startsWith('video')));
+  if ((d.ig || d.inbox) && !viaServer) { toast('Choose at least one account connected for real'); return; }
   if (viaServer) { submitViaServer(d, at, publish, live); return; }
   saveLocalPost(d, at, publish, [...d.selected]);
   draft = null;
@@ -505,10 +551,13 @@ async function submitViaServer(d: Draft, at: number, publish: boolean, live: str
   try {
     let source: PostSource;
     if (d.ig) source = { type: 'instagram', account_id: d.ig.accountId, media_id: d.ig.mediaId, permalink: d.ig.permalink, thumbnail_url: d.thumb };
+    else if (d.inbox) source = { type: 'inbox', id: d.inbox.id, thumbnail_url: d.thumb };
     else {
       if (!d.file) throw new Error('Choose the video file again – it is no longer in this browser.');
-      toast('Uploading the video to the server…');
-      source = { type: 'upload', key: await uploadForLater(d.file), thumbnail_url: d.thumb };
+      const btn = buttons.find((b) => b.dataset.action === 'publish');
+      const label = btn?.textContent ?? '';
+      const key = await uploadForLater(d.file, (pct) => { if (btn) btn.textContent = `Uploading ${pct}%`; }).finally(() => { if (btn) btn.textContent = label; });
+      source = { type: 'upload', key, thumbnail_url: d.thumb };
     }
     const planned = await planServerPost({
       title: d.title.trim(), caption: d.caption, source, scheduled_at: at, draft: !publish,
@@ -528,7 +577,7 @@ async function submitViaServer(d: Draft, at: number, publish: boolean, live: str
 }
 
 // A small frame grab for the content list.
-function makeThumb(file: File, url: string): Promise<string | undefined> {
+function makeThumb(file: { type: string }, url: string): Promise<string | undefined> {
   return new Promise((resolve) => {
     const draw = (src: CanvasImageSource, w: number, h: number) => {
       const c = document.createElement('canvas');
@@ -544,7 +593,8 @@ function makeThumb(file: File, url: string): Promise<string | undefined> {
       img.src = url;
     } else {
       const v = document.createElement('video');
-      v.muted = true; v.preload = 'auto'; v.src = url;
+      if (/^https?:/.test(url)) v.crossOrigin = 'anonymous'; // a video on our server: allowed to draw from it
+      v.muted = true; v.playsInline = true; v.preload = 'auto'; v.src = url;
       v.onloadeddata = () => { v.currentTime = Math.min(1, (v.duration || 2) / 2); };
       v.onseeked = () => draw(v, v.videoWidth, v.videoHeight);
       v.onerror = () => resolve(undefined);
@@ -559,6 +609,7 @@ async function setMedia(file: File) {
   if (d.mediaUrl) URL.revokeObjectURL(d.mediaUrl);
   d.file = file;
   d.ig = undefined;
+  d.inbox = undefined;
   d.mediaUrl = URL.createObjectURL(file);
   d.mediaName = file.name; d.mediaType = file.type; d.mediaSize = file.size;
   if (!d.title) d.title = file.name.replace(/\.[^.]+$/, '').replace(/[-_]+/g, ' ');
@@ -566,6 +617,18 @@ async function setMedia(file: File) {
   render();
   d.thumb = await makeThumb(file, d.mediaUrl);
   if (draft === d) render();
+}
+
+// ---------- inbox: videos shared from the iPhone ----------
+function viewInbox() {
+  const items = inboxItems();
+  return shell('Inbox', `
+    <p class="sub">Videos you share from your iPhone (e.g. from the Edits app) land here. Turn one into a post here or on any other device.${hasServerSession() ? '' : ' Connect Instagram first, so the server knows you.'}</p>
+    <section class="card">${items.length ? items.map((v) => `<div class="post-row">
+      <a class="thumb" href="#/create?inbox=${encodeURIComponent(v.id)}" aria-label="Create post">${icons.play}</a>
+      <div class="post-main"><a class="post-link" href="#/create?inbox=${encodeURIComponent(v.id)}"><b>${esc(v.name)}</b></a><small>${fmtDate(v.created_at)} · ${fmtSize(v.size)}</small></div>
+      <div class="post-actions"><a class="btn small primary" href="#/create?inbox=${encodeURIComponent(v.id)}">Create post</a><button class="icon-btn" data-action="inbox-delete" data-id="${esc(v.id)}" aria-label="Delete">${icons.trash}</button></div>
+    </div>`).join('') : `<div class="empty"><b>Nothing here yet</b>Set up the iPhone Shortcut once under Settings, then share a video from Edits (or Photos) to “An Crosspost senden”.<br><a class="btn" href="#/settings">Set up the iPhone</a></div>`}</section>`, '#/inbox');
 }
 
 // ---------- one post, to look at again ----------
@@ -768,7 +831,7 @@ function viewAccounts() {
     return `<section class="card acc">
       <div class="acc-top">${badge(id, 40)}<div><b>${p.name}</b><span class="tagline">${p.source ? '<span class="tag">Source</span>' : ''}${p.destination ? '<span class="tag">Destination</span>' : ''}</span></div></div>
       <div class="acc-hint">${p.hint}${isOAuth(id) ? (isConfigured(id) ? ' <span class="tag live">Echte Anmeldung</span>' : ' <span class="tag">Demo – noch nicht eingerichtet</span>') : ''}</div>
-      ${linked.length ? `<div class="acc-linked">${linked.map((a) => `<div class="linked ${a.auth ? '' : 'demo'}">${icons.check.replace('<svg', '<svg width="14" height="14"')}<span>@${esc(a.handle)}</span><small class="conn-kind">${a.auth ? (a.auth.expiresAt && a.auth.expiresAt < Date.now() && !a.auth.refreshToken ? 'expired' : 'Live') : 'Demo'}</small>${a.auth && isOAuth(a.platform) && isConfigured(a.platform) ? `<button class="btn small" data-action="connect" data-v="${a.platform}" title="Sign in again, e.g. to grant new permissions">Reconnect</button>` : ''}<button class="icon-btn" data-action="disconnect" data-id="${a.id}" aria-label="Disconnect" title="Disconnect">${icons.close}</button></div>`).join('')}</div>` : ''}
+      ${linked.length ? `<div class="acc-linked">${linked.map((a) => `<div class="linked ${store.isLive(a) ? '' : 'demo'}">${icons.check.replace('<svg', '<svg width="14" height="14"')}<span>@${esc(a.handle)}</span><small class="conn-kind" title="${a.cloud && !a.auth ? 'Connected on another device; posts go through the server' : ''}">${a.auth ? (a.auth.expiresAt && a.auth.expiresAt < Date.now() && !a.auth.refreshToken && !a.cloud ? 'expired' : 'Live') : a.cloud ? 'Live' : 'Demo'}</small>${store.isLive(a) && isOAuth(a.platform) && isConfigured(a.platform) ? `<button class="btn small" data-action="connect" data-v="${a.platform}" title="Sign in again, e.g. to grant new permissions">Reconnect</button>` : ''}<button class="icon-btn" data-action="disconnect" data-id="${a.id}" aria-label="Disconnect" title="Disconnect">${icons.close}</button></div>`).join('')}</div>` : ''}
       <button class="btn small ${linked.length ? '' : 'primary'}" data-action="connect" data-v="${id}">${linked.length ? 'Add another' : 'Connect'}</button>
     </section>`;
   };
@@ -797,6 +860,27 @@ function integrationsCard() {
   </form>`;
 }
 
+// The Shortcut key stays on screen (also across re-renders) until the page is reloaded.
+let shortcutShown: string | null = null;
+
+/** How to build the Shortcut on the iPhone; the key is shown once. */
+function shortcutSteps(key: string) {
+  const field = (id: string, label: string, value: string) => `<div><label class="field-label" for="${id}">${label}</label><div class="copy-row"><input class="input" id="${id}" readonly value="${esc(value)}" onclick="this.select()"><button class="btn small" data-action="copy-value" data-v="${id}">Copy</button></div></div>`;
+  return `<div class="stack shortcut-steps">
+    ${field('sc-url', 'Address', inboxEndpoint())}
+    ${field('sc-auth', 'Authorization (keep it to yourself)', `Bearer ${key}`)}
+    <ol class="steps-list">
+      <li>Open <b>Shortcuts</b> (Kurzbefehle) on the iPhone, tap <b>+</b> and name it <b>An Crosspost senden</b>.</li>
+      <li>Tap the <b>ⓘ</b> (or the name) → turn on <b>Show in Share Sheet</b> (Im Share-Sheet anzeigen); as input allow <b>Media</b> (Medien).</li>
+      <li>Add <b>Get Contents of URL</b> (Inhalte von URL abrufen): paste the <b>Address</b>, Method <b>POST</b>, add a header <b>Authorization</b> with the value above, Request Body <b>File</b> (Datei) → <b>Shortcut Input</b> (Kurzbefehleingabe).</li>
+      <li>Add <b>Get Dictionary Value</b> (Wörterbuchwert abrufen): Key <b>open_url</b>, from <b>Contents of URL</b>.</li>
+      <li>Add <b>Open URLs</b> (URLs öffnen) with the <b>Dictionary Value</b>. Done.</li>
+      <li>In Edits: export the video, tap <b>Share</b> → <b>An Crosspost senden</b>. Crosspost opens with the video in a new post.</li>
+    </ol>
+    <p class="hint">Videos up to 100 MB. The key is shown only now; if you lose it, set up a new one.</p>
+  </div>`;
+}
+
 function viewSettings() {
   const u = store.currentUser()!;
   let zones: string[] = [];
@@ -812,13 +896,17 @@ function viewSettings() {
       </form>
       <section class="card stack">
         <h2>Your data</h2>
-        <p class="sub">Your posts, workflows and accounts are stored in this browser. Workflows with an Instagram source are also kept on the server, together with the sign-ins they need (encrypted), so they run while this page is closed.</p>
+        <p class="sub">Your posts are stored in this browser. Connected accounts and workflows are also kept on the server, the sign-ins encrypted, so posts go out while this page is closed and every device you use shows the same accounts.</p>
         <div class="row"><button class="btn" data-action="export">Download my data</button><button class="btn danger" data-action="wipe">Delete posts &amp; workflows</button></div>
         <h2 style="margin-top:24px">Videos in this browser</h2>
         <p class="sub">Videos you post are kept here (up to 1 GB each), so you can watch a post again and post it once more. <span id="kept-usage"></span></p>
         <div class="row"><button class="btn" data-action="forget-videos">Remove kept videos</button></div>
+        <h2 style="margin-top:24px">iPhone: share from Edits</h2>
+        <p class="sub">A Shortcut puts “An Crosspost senden” into the iPhone's share menu. Shared videos land in your Inbox and open right away in a new post.</p>
+        <div class="row"><button class="btn" data-action="shortcut-key">Set up the Shortcut</button></div>
+        <div id="shortcut-setup">${shortcutShown ? shortcutSteps(shortcutShown) : ''}</div>
         <h2 style="margin-top:24px">About publishing</h2>
-        <p class="sub">Accounts marked <b>Live</b> publish for real. Accounts marked <b>Demo</b> are simulated. Posts you schedule here go out while the app is open in a browser; workflows from Instagram run on the server around the clock.</p>
+        <p class="sub">Accounts marked <b>Live</b> publish for real. Accounts marked <b>Demo</b> are simulated. Posts with a video and workflows from Instagram go through the server and run around the clock.</p>
       </section>
     </div>
     ${integrationsCard()}`, '#/settings');
@@ -831,7 +919,7 @@ function render() {
   const views: Record<string, () => string> = {
     '/': viewDashboard, '/create': () => viewCreate(params), '/posts': viewPosts, '/calendar': viewCalendar,
     '/workflows': viewWorkflows, '/workflows/new': () => viewWorkflowEdit(params), '/workflows/edit': () => viewWorkflowEdit(params),
-    '/accounts': viewAccounts, '/settings': viewSettings, '/post': () => viewPost(params),
+    '/accounts': viewAccounts, '/settings': viewSettings, '/post': () => viewPost(params), '/inbox': viewInbox,
   };
   const view = views[path!] ?? viewDashboard;
   const scroll = window.scrollY;
@@ -844,6 +932,7 @@ function render() {
 }
 
 function mount(path: string) {
+  if (path === '/inbox') refreshInbox().catch((e: Error) => toast(e.message));
   if (path === '/post') mountPostMedia();
   if (path === '/settings') {
     keptVideosUsage().then((u) => { const el = root.querySelector('#kept-usage'); if (el) el.textContent = u.count ? `Now: ${u.count} ${u.count === 1 ? 'video' : 'videos'}, ${fmtSize(u.bytes)}.` : 'None kept yet.'; });
@@ -960,7 +1049,7 @@ root.addEventListener('click', (e) => {
     case 'menu': root.querySelector('.shell')!.classList.add('open'); break;
     case 'close-menu': root.querySelector('.shell')!.classList.remove('open'); break;
     case 'pick-media': root.querySelector<HTMLInputElement>('#media-input')!.click(); break;
-    case 'clear-media': if (draft) { if (draft.mediaUrl) URL.revokeObjectURL(draft.mediaUrl); Object.assign(draft, { file: undefined, mediaUrl: undefined, mediaName: '', mediaType: '', mediaSize: 0, thumb: undefined, ig: undefined }); render(); } break;
+    case 'clear-media': if (draft) { if (draft.mediaUrl) URL.revokeObjectURL(draft.mediaUrl); Object.assign(draft, { file: undefined, mediaUrl: undefined, mediaName: '', mediaType: '', mediaSize: 0, thumb: undefined, ig: undefined, inbox: undefined }); render(); } break;
     case 'pick-ig': instagramPicker(); break;
     case 'toggle-dest': if (draft) { syncDraftFromForm(draft); const on = (el as HTMLInputElement).checked; if (on) draft.selected.add(id!); else draft.selected.delete(id!); render(); } break;
     case 'open-override': e.preventDefault(); syncDraftFromForm(draft!); draft!.open.add(id!); render(); break;
@@ -977,6 +1066,11 @@ root.addEventListener('click', (e) => {
     }); break;
     case 'post-again': if (post) draftFromPost(post).then((d) => { draft = d; location.hash = '#/create?from=' + encodeURIComponent(post.id); toast(d.mediaName ? 'Copied into a new post' : 'Copied the text – choose the video again'); }); break;
     case 'copy': { const t = document.getElementById(v!)?.innerText ?? ''; navigator.clipboard.writeText(t).then(() => toast('Copied'), () => toast('Copying is not allowed here')); break; }
+    case 'inbox-delete': if (id) confirmBox('Delete this video?', 'It is removed from your inbox and from the server.', 'Delete', () => { deleteInboxItem(id).then(() => toast('Deleted'), (err: Error) => toast(err.message)); }); break;
+    case 'shortcut-key': confirmBox('Set up the iPhone Shortcut?', 'You get a new key for the Shortcut. A key you made before stops working.', 'Create key', () => {
+      createShortcutKey().then((key) => { shortcutShown = key; render(); }, (err: Error) => toast(err.message));
+    }); break;
+    case 'copy-value': { const t = root.querySelector<HTMLInputElement>(`#${v}`)?.value ?? ''; navigator.clipboard.writeText(t).then(() => toast('Copied'), () => toast('Copying is not allowed here')); break; }
     case 'forget-videos': confirmBox('Remove kept videos?', 'Posts stay in your content list; only the video copies in this browser are removed. Published posts stay on the platforms.', 'Remove', () => { forgetAllVideos().then(() => { toast('Kept videos removed'); render(); }); }); break;
     case 'tab': postTab = v as typeof postTab; render(); break;
     case 'cal': calMonth = v === '0' ? new Date(new Date().getFullYear(), new Date().getMonth(), 1) : new Date(calMonth.getFullYear(), calMonth.getMonth() + Number(v), 1); render(); break;
