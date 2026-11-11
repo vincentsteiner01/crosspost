@@ -147,8 +147,8 @@ export async function publishReal(acc: Account, post: Post, caption: string, onP
     caption,
     video_url: videoUrl,
   });
-  // Instagram processes the video first (often a minute or more). Ask again in
-  // short requests – one long request gets cut off along the way.
+  // Instagram and TikTok fetch and process the video first (often a minute or more).
+  // Ask again in short requests – one long request gets cut off along the way.
   for (let i = 0; reply.pending && i < 120; i++) {
     await new Promise((r) => setTimeout(r, 5000));
     reply = await serverCall<PublishReply>('/publish/status', {
@@ -158,6 +158,9 @@ export async function publishReal(acc: Account, post: Post, caption: string, onP
       container_id: reply.container_id,
     });
   }
-  if (reply.pending) throw new PublishError('Instagram verarbeitet das Video nach 10 Minuten immer noch. Bitte später in Instagram nachsehen.');
+  if (reply.pending) {
+    const name = acc.platform === 'tiktok' ? 'TikTok' : 'Instagram';
+    throw new PublishError(`${name} verarbeitet das Video nach 10 Minuten immer noch. Bitte später in ${name} nachsehen.`);
+  }
   return reply.url;
 }

@@ -6,7 +6,7 @@
 //   POST /oauth/refresh    get a new access token with a refresh token
 //   PUT  /media            keep an uploaded video at a public address
 //   POST /publish          publish a video to Facebook, Instagram or TikTok
-//   POST /publish/status   Instagram: publish the Reel once Instagram has processed it
+//   POST /publish/status   Instagram: publish the Reel once processed; TikTok: is the post through?
 //
 // Secrets (set with `npx wrangler secret put NAME`):
 //   FACEBOOK_APP_ID, FACEBOOK_APP_SECRET   (the Meta app – used for Facebook and Instagram)
@@ -271,14 +271,36 @@ async function publish({ platform, access_token, account_id, title, caption, vid
         source_info: { source: 'PULL_FROM_URL', video_url },
       }),
     });
-    return { id: init.data?.publish_id };
+    // TikTok fetches the video and posts it in the background; the site asks POST /publish/status.
+    return { pending: true, container_id: init.data?.publish_id };
   }
 
   throw new Error(`Publishing to ${platform} is not supported by this server`);
 }
 
-/** Instagram: check a Reel container; once Instagram has processed the video, publish it. */
+/** TikTok: is the post through? */
+async function tiktokStatus(access_token, publish_id) {
+  const s = await call(`${TIKTOK}/post/publish/status/fetch/`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${access_token}`, 'Content-Type': 'application/json; charset=UTF-8' },
+    body: JSON.stringify({ publish_id }),
+  });
+  const d = s.data || {};
+  if (d.status === 'FAILED') {
+    console.log(JSON.stringify({ event: 'tiktok_failed', fail_reason: d.fail_reason }));
+    throw new Error(`TikTok could not post the video: ${d.fail_reason || 'unknown reason'}`);
+  }
+  if (d.status !== 'PUBLISH_COMPLETE' && d.status !== 'SEND_TO_USER_INBOX') return { pending: true, container_id: publish_id, status: d.status };
+  const postId = d.publicaly_available_post_id?.[0];
+  return { id: String(postId || publish_id), url: postId ? `https://www.tiktok.com/video/${postId}` : undefined };
+}
+
+/** Instagram: check a Reel container; once Instagram has processed the video, publish it. TikTok: check the post. */
 async function publishStatus({ platform, access_token, account_id, container_id }) {
+  if (platform === 'tiktok') {
+    if (!access_token || !container_id) throw new Error('access_token and container_id are required');
+    return tiktokStatus(access_token, container_id);
+  }
   if (platform !== 'instagram') throw new Error(`Status checks are not supported for ${platform}`);
   if (!access_token || !account_id || !container_id) throw new Error('access_token, account_id and container_id are required');
   const token = encodeURIComponent(access_token);
