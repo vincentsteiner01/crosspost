@@ -5,7 +5,7 @@ compatibility_date = "2025-01-01"
 
 [vars]
 # The address of your GitHub Pages site (no trailing slash).
-ALLOWED_ORIGIN = "https://YOUR-GITHUB-NAME.github.io"
+ALLOWED_ORIGIN = "https://vincentsteiner01.github.io"
 # Unaudited TikTok apps may only post privately. Change after TikTok's audit, e.g. PUBLIC_TO_EVERYONE.
 TIKTOK_PRIVACY = "SELF_ONLY"
 TIKTOK_VERIFICATION_FILENAME = ""
