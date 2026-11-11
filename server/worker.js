@@ -289,31 +289,41 @@ async function publish({ platform, access_token, account_id, title, caption, vid
   }
 
   if (platform === 'tiktok') {
-    const auth = { Authorization: `Bearer ${access_token}`, 'Content-Type': 'application/json; charset=UTF-8' };
-    if (options.tiktok_mode === 'inbox') {
-      // Lands as a draft in the TikTok app; the person adds sound, text and posts it there.
-      const init = await call(`${TIKTOK}/post/publish/inbox/video/init/`, { method: 'POST', headers: auth, body: JSON.stringify({ source_info: { source: 'PULL_FROM_URL', video_url } }) });
-      return { pending: true, container_id: init.data?.publish_id };
+    try {
+      return await tiktokPublish({ access_token, title, caption, video_url, options }, env);
+    } catch (e) {
+      // Connected before drafts were added (video.upload) or the permission was turned off.
+      if (e.detail?.code === 'scope_not_authorized') throw new Error('TikTok needs one more permission for this. Reconnect TikTok under Connected accounts, then press Retry.');
+      throw e;
     }
-    const creator = await call(`${TIKTOK}/post/publish/creator_info/query/`, { method: 'POST', headers: auth });
-    const levels = creator.data?.privacy_level_options || ['SELF_ONLY'];
-    // A public account offers PUBLIC_TO_EVERYONE; unaudited apps may only post to private accounts.
-    console.log(JSON.stringify({ event: 'tiktok_creator', privacy_level_options: levels, max_video_post_duration_sec: creator.data?.max_video_post_duration_sec }));
-    const wanted = env.TIKTOK_PRIVACY || 'SELF_ONLY';
-    const privacy_level = levels.includes(wanted) ? wanted : levels[0];
-    const init = await call(`${TIKTOK}/post/publish/video/init/`, {
-      method: 'POST',
-      headers: auth,
-      body: JSON.stringify({
-        post_info: { title: (caption || title || '').slice(0, 2200), privacy_level },
-        source_info: { source: 'PULL_FROM_URL', video_url },
-      }),
-    });
-    // TikTok fetches the video and posts it in the background; the site asks POST /publish/status.
-    return { pending: true, container_id: init.data?.publish_id };
   }
 
   throw new Error(`Publishing to ${platform} is not supported by this server`);
+}
+
+async function tiktokPublish({ access_token, title, caption, video_url, options }, env) {
+  const auth = { Authorization: `Bearer ${access_token}`, 'Content-Type': 'application/json; charset=UTF-8' };
+  if (options.tiktok_mode === 'inbox') {
+    // Lands as a draft in the TikTok app; the person adds sound, text and posts it there.
+    const init = await call(`${TIKTOK}/post/publish/inbox/video/init/`, { method: 'POST', headers: auth, body: JSON.stringify({ source_info: { source: 'PULL_FROM_URL', video_url } }) });
+    return { pending: true, container_id: init.data?.publish_id };
+  }
+  const creator = await call(`${TIKTOK}/post/publish/creator_info/query/`, { method: 'POST', headers: auth });
+  const levels = creator.data?.privacy_level_options || ['SELF_ONLY'];
+  // A public account offers PUBLIC_TO_EVERYONE; unaudited apps may only post to private accounts.
+  console.log(JSON.stringify({ event: 'tiktok_creator', privacy_level_options: levels, max_video_post_duration_sec: creator.data?.max_video_post_duration_sec }));
+  const wanted = env.TIKTOK_PRIVACY || 'SELF_ONLY';
+  const privacy_level = levels.includes(wanted) ? wanted : levels[0];
+  const init = await call(`${TIKTOK}/post/publish/video/init/`, {
+    method: 'POST',
+    headers: auth,
+    body: JSON.stringify({
+      post_info: { title: (caption || title || '').slice(0, 2200), privacy_level },
+      source_info: { source: 'PULL_FROM_URL', video_url },
+    }),
+  });
+  // TikTok fetches the video and posts it in the background; the site asks POST /publish/status.
+  return { pending: true, container_id: init.data?.publish_id };
 }
 
 /** TikTok: is the post through? */
