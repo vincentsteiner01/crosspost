@@ -111,7 +111,7 @@ function processQueue() {
         if (acc?.auth) {
           const err = checkDelivery(d, post);
           (err ? Promise.reject(new Error(err)) : publishReal(acc, post, d.caption, progressReporter(d)))
-            .then((link) => { d.status = 'published'; d.url = link; d.error = undefined; })
+            .then((link) => { d.status = 'published'; d.url = link; d.error = undefined; d.label = acc.platform === 'tiktok' && post.tiktok?.mode === 'inbox' ? store.TIKTOK_INBOX_LABEL : undefined; })
             .catch((e: Error) => { d.status = 'failed'; d.error = e.message; })
             .finally(() => { d.progress = undefined; d.at = Date.now(); store.commit(); });
           continue;
@@ -208,7 +208,7 @@ function postRow(p: Post, actions = true) {
       <small>${STATUS_LABEL[status]} · ${fmtDate(p.scheduledAt)}${p.workflowId ? ' · via workflow' : ''}${p.remote?.permalink ? ` · <a href="${esc(p.remote.permalink)}" target="_blank" rel="noopener">Original</a>` : ''}</small>
       <div class="chips">${p.deliveries.map((d) => {
         const a = store.account(d.accountId);
-        return `<${d.url ? `a href="${esc(d.url)}" target="_blank" rel="noopener"` : 'span'} class="chip ${d.status}" title="${esc(d.error ?? STATUS_LABEL[d.status]!)}">${a ? badge(a.platform, 18) : ''}${a ? '@' + esc(a.handle) : 'removed'} · ${STATUS_LABEL[d.status]}${d.status === 'publishing' && d.progress !== undefined ? ` ${d.progress}%` : ''}${d.error ? ' – ' + esc(d.error) : ''}</${d.url ? 'a' : 'span'}>`;
+        return `<${d.url ? `a href="${esc(d.url)}" target="_blank" rel="noopener"` : 'span'} class="chip ${d.status}" title="${esc(d.error ?? (d.label === store.TIKTOK_INBOX_LABEL ? 'Open the TikTok app → Inbox → the notification from Crosspost Studio, then post it there' : STATUS_LABEL[d.status]!))}">${a ? badge(a.platform, 18) : ''}${a ? '@' + esc(a.handle) : 'removed'} · ${d.status === 'published' && d.label ? esc(d.label) : STATUS_LABEL[d.status]}${d.status === 'publishing' && d.progress !== undefined ? ` ${d.progress}%` : ''}${d.error ? ' – ' + esc(d.error) : ''}</${d.url ? 'a' : 'span'}>`;
       }).join('')}</div>
     </div>
     ${actions ? `<div class="post-actions">

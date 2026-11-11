@@ -110,7 +110,9 @@ export async function planServerPost(body: { title: string; caption: string; sou
 }
 
 // ---------- what the server picked up ----------
-interface ServerJob { id: string; account_id: string; platform: string; status: string; caption: string | null; url: string | null; error: string | null; scheduled_at: number; updated_at: number | null }
+interface ServerJob { id: string; account_id: string; platform: string; status: string; caption: string | null; url: string | null; error: string | null; scheduled_at: number; updated_at: number | null; options: string | null }
+
+const inInbox = (j: ServerJob) => j.platform === 'tiktok' && j.status === 'published' && /"tiktok_mode":"inbox"/.test(j.options ?? '');
 interface ServerItem { id: string; kind: 'workflow' | 'upload' | 'instagram'; title: string | null; workflow_id: string; caption: string | null; permalink: string | null; thumbnail_url: string | null; created_at: number; jobs: ServerJob[] }
 export interface ServerWorkflowState { id: string; active: number; last_checked: number | null; last_error: string | null }
 
@@ -127,7 +129,7 @@ function toPost(i: ServerItem): Post {
     title: (i.title || caption.split('\n').map((s) => s.trim()).find(Boolean) || (fromInstagram ? 'Instagram video' : 'Video')).slice(0, 80), caption,
     mediaName: fromInstagram ? 'Instagram video' : 'Video', mediaType: 'video/mp4', mediaSize: 0, thumb: i.thumbnail_url ?? undefined,
     createdAt: i.created_at, scheduledAt: waiting.length ? Math.min(...waiting) : i.created_at, workflowId: i.kind === 'workflow' ? i.workflow_id : undefined,
-    deliveries: i.jobs.map((j) => ({ accountId: j.account_id, status: STATUS[j.status] ?? 'failed', caption: j.caption ?? '', error: j.error ?? undefined, url: j.url ?? undefined, at: j.updated_at ?? undefined })),
+    deliveries: i.jobs.map((j) => ({ accountId: j.account_id, status: STATUS[j.status] ?? 'failed', caption: j.caption ?? '', error: j.error ?? undefined, url: j.url ?? undefined, at: j.updated_at ?? undefined, label: inInbox(j) ? store.TIKTOK_INBOX_LABEL : undefined })),
   };
 }
 

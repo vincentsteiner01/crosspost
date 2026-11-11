@@ -12,7 +12,9 @@ export interface Workflow {
 }
 /** 'handed-over': uploaded and waiting on the platform's own schedule (YouTube publishAt). */
 export type DeliveryStatus = 'scheduled' | 'publishing' | 'published' | 'handed-over' | 'failed' | 'draft';
-export interface Delivery { accountId: string; status: DeliveryStatus; caption: string; error?: string; at?: number; url?: string; progress?: number }
+/** label: shown instead of "Published", e.g. for a TikTok draft that waits in the TikTok inbox. */
+export interface Delivery { accountId: string; status: DeliveryStatus; caption: string; error?: string; at?: number; url?: string; progress?: number; label?: string }
+export const TIKTOK_INBOX_LABEL = 'In your TikTok inbox';
 export interface YouTubeOptions {
   privacy: 'public' | 'unlisted' | 'private';
   /** Add #Shorts so vertical clips up to 3 minutes show in the Shorts feed. */
