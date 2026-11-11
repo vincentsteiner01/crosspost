@@ -7,6 +7,8 @@
 //   PUT  /media            keep an uploaded video at a public address
 //   POST /publish          publish a video to Facebook, Instagram or TikTok
 //   POST /publish/status   Instagram: publish the Reel once processed; TikTok: is the post through?
+//   /api/…                 server-side workflows (see workflows.js); PUT /media needs its session
+// A cron (wrangler.toml [triggers]) runs the workflows while the site is closed.
 //
 // Secrets (set with `npx wrangler secret put NAME`):
 //   FACEBOOK_APP_ID, FACEBOOK_APP_SECRET   (the Meta app – used for Facebook and Instagram)
@@ -18,17 +20,27 @@
 //   TIKTOK_PRIVACY    privacy level for TikTok posts (unaudited apps may only post SELF_ONLY)
 //   TIKTOK_VERIFICATION_FILENAME / TIKTOK_VERIFICATION_CONTENT
 //                     the file TikTok asks you to host to verify this worker's address
-// Binding: MEDIA – an R2 bucket for uploaded videos.
+//   PUBLIC_URL        this worker's address (TikTok fetches workflow videos from there)
+// Secret TOKEN_KEY: 32 random bytes (base64) that encrypt the sign-ins workflows keep.
+// Bindings: MEDIA – an R2 bucket for uploaded videos; DB – the D1 database (migrations/).
+
+import { HttpError, workflowEngine } from './workflows.js';
 
 const GRAPH = 'https://graph.facebook.com/v25.0';
 const TIKTOK = 'https://open.tiktokapis.com/v2';
 
+const engine = workflowEngine({ call, publish, publishStatus, refresh, GRAPH, TIKTOK });
+
 export default {
+  async scheduled(controller, env, ctx) {
+    ctx.waitUntil(engine.scheduled(env));
+  },
+
   async fetch(request, env) {
     const cors = {
       'Access-Control-Allow-Origin': env.ALLOWED_ORIGIN || '*',
-      'Access-Control-Allow-Methods': 'GET, POST, PUT, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type',
+      'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
       'Access-Control-Max-Age': '86400',
     };
     const json = (data, status = 200) => new Response(JSON.stringify(data), { status, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -41,14 +53,19 @@ export default {
       }
       if (request.method === 'POST' && url.pathname === '/oauth/exchange') return json(await exchange(await request.json(), env));
       if (request.method === 'POST' && url.pathname === '/oauth/refresh') return json(await refresh(await request.json(), env));
-      if (request.method === 'PUT' && url.pathname === '/media') return json(await putMedia(request, env, url));
+      if (request.method === 'PUT' && url.pathname === '/media') {
+        await engine.requireUser(request, env);
+        return json(await putMedia(request, env, url));
+      }
       if (request.method === 'GET' && url.pathname.startsWith('/media/')) return getMedia(env, url.pathname.slice(7), cors);
       if (request.method === 'POST' && url.pathname === '/publish') return json(await publish(await request.json(), env));
       if (request.method === 'POST' && url.pathname === '/publish/status') return json(await publishStatus(await request.json()));
       if (url.pathname === '/') return json({ ok: true, service: 'crosspost' });
+      const api = await engine.handle(request, env, url);
+      if (api !== undefined) return json(api);
       return json({ error: 'Not found' }, 404);
     } catch (e) {
-      return json({ error: e.message || String(e) }, 400);
+      return json({ error: e.message || String(e) }, e instanceof HttpError ? e.status : 400);
     }
   },
 };

@@ -9,6 +9,7 @@ import { redirectUri, startOAuth } from '../lib/oauth';
 import { canHandOver, handOverToYouTube, publishReal, rememberFile } from '../lib/publisher';
 import { defaultYouTubeOptions, type YouTubeOptions } from '../lib/store';
 import { url } from '../lib/paths';
+import { itemAction, runServerWorkflow, runsOnServer, scheduleSync, serverHeartbeat, serverWorkflowState, syncNow } from '../lib/server';
 
 const user = store.currentUser();
 if (!user) location.replace(url('login/'));
@@ -173,7 +174,7 @@ const NAV = [
 
 function shell(title: string, body: string, route: string) {
   const u = store.currentUser()!;
-  const pending = store.posts().filter((p) => postStatus(p) === 'draft').length;
+  const pending = store.allPosts().filter((p) => postStatus(p) === 'draft').length;
   return `<div class="shell">
   <aside class="sidebar">
     <a class="brand" href="#/">${icons.logoMark}<span>Crosspost</span></a>
@@ -204,7 +205,7 @@ function postRow(p: Post, actions = true) {
     <div class="thumb">${p.thumb ? `<img src="${p.thumb}" alt="">` : icons.play}</div>
     <div class="post-main">
       <b>${esc(p.title || 'Untitled post')}</b>
-      <small>${STATUS_LABEL[status]} · ${fmtDate(p.scheduledAt)}${p.workflowId ? ' · via workflow' : ''}</small>
+      <small>${STATUS_LABEL[status]} · ${fmtDate(p.scheduledAt)}${p.workflowId ? ' · via workflow' : ''}${p.remote?.permalink ? ` · <a href="${esc(p.remote.permalink)}" target="_blank" rel="noopener">Original</a>` : ''}</small>
       <div class="chips">${p.deliveries.map((d) => {
         const a = store.account(d.accountId);
         return `<${d.url ? `a href="${esc(d.url)}" target="_blank" rel="noopener"` : 'span'} class="chip ${d.status}" title="${esc(d.error ?? STATUS_LABEL[d.status]!)}">${a ? badge(a.platform, 18) : ''}${a ? '@' + esc(a.handle) : 'removed'} · ${STATUS_LABEL[d.status]}${d.status === 'publishing' && d.progress !== undefined ? ` ${d.progress}%` : ''}${d.error ? ' – ' + esc(d.error) : ''}</${d.url ? 'a' : 'span'}>`;
@@ -213,7 +214,7 @@ function postRow(p: Post, actions = true) {
     ${actions ? `<div class="post-actions">
       ${status === 'draft' ? `<button class="btn small primary" data-action="approve" data-id="${p.id}">Approve</button>` : ''}
       ${p.deliveries.some((d) => d.status === 'failed') ? `<button class="btn small" data-action="retry" data-id="${p.id}">Retry</button>` : ''}
-      ${status === 'draft' || status === 'scheduled' ? `<a class="btn small" href="#/create?edit=${p.id}">Edit</a>` : ''}
+      ${(status === 'draft' || status === 'scheduled') && !p.remote ? `<a class="btn small" href="#/create?edit=${p.id}">Edit</a>` : ''}
       <button class="icon-btn" data-action="delete-post" data-id="${p.id}" aria-label="Delete">${icons.trash}</button>
     </div>` : ''}
   </div>`;
@@ -222,7 +223,7 @@ function postRow(p: Post, actions = true) {
 function viewDashboard() {
   const accs = store.accounts();
   const wfs = store.workflows();
-  const posts = store.posts();
+  const posts = store.allPosts();
   const deliveries = posts.flatMap((p) => p.deliveries);
   const hasSource = accs.some((a) => platform(a.platform).source);
   const hasDest = accs.some((a) => platform(a.platform).destination);
@@ -445,7 +446,7 @@ const POST_TABS = ['all', 'scheduled', 'draft', 'published', 'failed'] as const;
 let postTab: (typeof POST_TABS)[number] = 'all';
 
 function viewPosts() {
-  const list = store.posts().filter((p) => postTab === 'all' || postStatus(p) === postTab || (postTab === 'failed' && p.deliveries.some((d) => d.status === 'failed')));
+  const list = store.allPosts().filter((p) => postTab === 'all' || postStatus(p) === postTab || (postTab === 'failed' && p.deliveries.some((d) => d.status === 'failed')));
   const names = { all: 'All', scheduled: 'Scheduled', draft: 'Drafts & approvals', published: 'Published', failed: 'Failed' };
   return shell('Content', `
     <div class="section-head"><div class="tabs">${POST_TABS.map((t) => `<button data-action="tab" data-v="${t}" class="${postTab === t ? 'active' : ''}">${names[t]}</button>`).join('')}</div></div>
@@ -460,7 +461,7 @@ function viewCalendar() {
   start.setDate(1 - ((first.getDay() + 6) % 7));
   const days: Date[] = Array.from({ length: 42 }, (_, i) => new Date(start.getFullYear(), start.getMonth(), start.getDate() + i));
   const today = new Date().toDateString();
-  const posts = store.posts();
+  const posts = store.allPosts();
   const label = first.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
   return shell('Calendar', `
     <section class="card">
@@ -479,9 +480,12 @@ function viewWorkflows() {
     <div class="section-head"><p class="sub" style="margin:0">A workflow watches one account and publishes everything new to the destinations you pick.</p><a class="btn primary" href="#/workflows/new">${icons.plus}New workflow</a></div>
     ${wfs.length ? `<div class="wf-list">${wfs.map((w) => {
       const src = store.account(w.sourceId);
+      const server = runsOnServer(w);
+      const st = server ? serverWorkflowState(w.id) : undefined;
+      const runsText = server ? `Runs on the server${st?.last_checked ? ` · checked ${new Date(st.last_checked).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}` : ''}` : `${w.runs} runs (demo)`;
       return `<section class="card wf">
         <label class="switch" title="${w.active ? 'Active' : 'Paused'}"><input type="checkbox" data-action="wf-toggle" data-id="${w.id}" ${w.active ? 'checked' : ''}><span></span></label>
-        <div class="wf-meta"><b>${esc(w.name)}</b><small>${w.active ? 'Active' : 'Paused'} · ${w.autoPublish ? 'Publishes automatically' : 'Waits for approval'} · ${w.runs} runs</small></div>
+        <div class="wf-meta"><b>${esc(w.name)}</b><small>${w.active ? 'Active' : 'Paused'} · ${w.autoPublish ? 'Publishes automatically' : 'Waits for approval'} · ${runsText}</small>${st?.last_error ? `<small style="display:block;color:#c0263d">Last check failed: ${esc(st.last_error)}</small>` : ''}</div>
         <div class="wf-route">${src ? badge(src.platform, 32) : '<span class="tag">No source</span>'}<span class="arrow">${icons.arrow}</span><span class="wf-dests">${w.destinationIds.map((id) => store.account(id)).filter(Boolean).map((a) => badge(a!.platform, 32)).join('') || '<span class="tag">No destinations</span>'}</span></div>
         <div class="row"><button class="btn small" data-action="wf-run" data-id="${w.id}">${icons.play}Run now</button><a class="btn small" href="#/workflows/edit?id=${w.id}">Edit</a><button class="icon-btn" data-action="wf-delete" data-id="${w.id}" aria-label="Delete">${icons.trash}</button></div>
       </section>`;
@@ -498,7 +502,8 @@ function viewWorkflowEdit(params: URLSearchParams) {
     <form class="card stack" id="wf-form" data-id="${w.id}" data-new="${existing ? '' : '1'}">
       <div><label class="field-label" for="wf-name">Workflow name</label><input class="input" id="wf-name" placeholder="e.g. TikTok to everywhere" value="${esc(w.name)}"></div>
       <div><span class="field-label">1. Source: where new content comes from</span>
-        ${sources.length ? `<div class="pick-grid">${sources.map((a) => `<label class="pick ${w.sourceId === a.id ? 'on' : ''}"><input type="radio" name="wf-src" value="${a.id}" ${w.sourceId === a.id ? 'checked' : ''}>${badge(a.platform, 28)}<span><b>${platform(a.platform).name}</b><small>@${esc(a.handle)}</small></span></label>`).join('')}</div>` : `<p class="hint">Connect a source first (TikTok, Instagram, YouTube, Facebook, Dropbox, Google Drive or a podcast). <a href="#/accounts">Connect accounts</a></p>`}
+        ${sources.length ? `<div class="pick-grid">${sources.map((a) => `<label class="pick ${w.sourceId === a.id ? 'on' : ''}"><input type="radio" name="wf-src" value="${a.id}" ${w.sourceId === a.id ? 'checked' : ''}>${badge(a.platform, 28)}<span><b>${platform(a.platform).name}</b><small>@${esc(a.handle)}</small></span></label>`).join('')}</div>
+        <p class="hint">An Instagram account connected for real is checked on the server every 5 minutes, also while this page is closed: every new Reel or video goes to the destinations below. Other sources only run as a demo so far.</p>` : `<p class="hint">Connect a source first (TikTok, Instagram, YouTube, Facebook, Dropbox, Google Drive or a podcast). <a href="#/accounts">Connect accounts</a></p>`}
       </div>
       <div><span class="field-label">2. Destinations: where it gets published</span>
         ${dests.length ? `<div class="pick-grid">${dests.map((a) => `<label class="pick ${w.destinationIds.includes(a.id) ? 'on' : ''}"><input type="checkbox" name="wf-dest" value="${a.id}" ${w.destinationIds.includes(a.id) ? 'checked' : ''}>${badge(a.platform, 28)}<span><b>${platform(a.platform).name}</b><small>@${esc(a.handle)}</small></span></label>`).join('')}</div>` : `<p class="hint">No destinations connected yet. <a href="#/accounts">Connect accounts</a></p>`}
@@ -568,10 +573,10 @@ function viewSettings() {
       </form>
       <section class="card stack">
         <h2>Your data</h2>
-        <p class="sub">Everything is stored in this browser only.</p>
+        <p class="sub">Your posts, workflows and accounts are stored in this browser. Workflows with an Instagram source are also kept on the server, together with the sign-ins they need (encrypted), so they run while this page is closed.</p>
         <div class="row"><button class="btn" data-action="export">Download my data</button><button class="btn danger" data-action="wipe">Delete posts &amp; workflows</button></div>
         <h2 style="margin-top:24px">About publishing</h2>
-        <p class="sub">Accounts marked <b>Live</b> publish for real. Accounts marked <b>Demo</b> are simulated. Scheduled posts go out while the app is open in a browser.</p>
+        <p class="sub">Accounts marked <b>Live</b> publish for real. Accounts marked <b>Demo</b> are simulated. Posts you schedule here go out while the app is open in a browser; workflows from Instagram run on the server around the clock.</p>
       </section>
     </div>
     ${integrationsCard()}`, '#/settings');
@@ -642,6 +647,7 @@ function mount(path: string) {
         removeWatermark: val('#wf-wm').checked, delayMinutes: Number((form.querySelector('#wf-delay') as HTMLSelectElement).value),
         createdAt: old?.createdAt ?? Date.now(), runs: old?.runs ?? 0,
       });
+      scheduleSync();
       toast(old ? 'Workflow saved' : 'Workflow created');
       location.hash = '#/workflows';
     });
@@ -704,7 +710,8 @@ root.addEventListener('click', (e) => {
     return;
   }
   const { action, id, v } = el.dataset;
-  const post = id ? store.posts().find((p) => p.id === id) : undefined;
+  const post = id ? store.allPosts().find((p) => p.id === id) : undefined;
+  const remoteDo = (p: Post, act: 'approve' | 'retry' | 'delete', done: string) => itemAction(p.remote!.itemId, act).then(() => toast(done)).catch((err: Error) => toast(err.message));
   switch (action) {
     case 'menu': root.querySelector('.shell')!.classList.add('open'); break;
     case 'close-menu': root.querySelector('.shell')!.classList.remove('open'); break;
@@ -717,21 +724,30 @@ root.addEventListener('click', (e) => {
     case 'when': syncDraftFromForm(draft!); draft!.when = v as 'now' | 'later'; render(); break;
     case 'save-draft': savePostFromDraft(false); break;
     case 'publish': savePostFromDraft(true); break;
-    case 'approve': if (post) { post.deliveries.forEach((d) => { if (d.status === 'draft') d.status = 'scheduled'; }); if (post.scheduledAt < Date.now()) post.scheduledAt = Date.now(); store.savePost(post); processQueue(); toast('Approved: publishing'); } break;
-    case 'retry': if (post) { post.deliveries.forEach((d) => { if (d.status === 'failed') { d.status = 'scheduled'; d.error = undefined; } }); post.scheduledAt = Math.min(post.scheduledAt, Date.now()); store.savePost(post); processQueue(); } break;
-    case 'delete-post': if (post) confirmBox('Delete this post?', 'It is removed from your content list. Posts already published stay on the platforms.', 'Delete', () => { store.deletePost(post.id); toast('Post deleted'); }); break;
+    case 'approve': if (post?.remote) remoteDo(post, 'approve', 'Approved: publishing'); else if (post) { post.deliveries.forEach((d) => { if (d.status === 'draft') d.status = 'scheduled'; }); if (post.scheduledAt < Date.now()) post.scheduledAt = Date.now(); store.savePost(post); processQueue(); toast('Approved: publishing'); } break;
+    case 'retry': if (post?.remote) remoteDo(post, 'retry', 'Trying again'); else if (post) { post.deliveries.forEach((d) => { if (d.status === 'failed') { d.status = 'scheduled'; d.error = undefined; } }); post.scheduledAt = Math.min(post.scheduledAt, Date.now()); store.savePost(post); processQueue(); } break;
+    case 'delete-post': if (post) confirmBox('Delete this post?', 'It is removed from your content list. Posts already published stay on the platforms.', 'Delete', () => { if (post.remote) remoteDo(post, 'delete', 'Post deleted'); else { store.deletePost(post.id); toast('Post deleted'); } }); break;
     case 'tab': postTab = v as typeof postTab; render(); break;
     case 'cal': calMonth = v === '0' ? new Date(new Date().getFullYear(), new Date().getMonth(), 1) : new Date(calMonth.getFullYear(), calMonth.getMonth() + Number(v), 1); render(); break;
-    case 'wf-toggle': { const w = store.workflows().find((x) => x.id === id); if (w) { w.active = (el as HTMLInputElement).checked; store.saveWorkflow(w); toast(w.active ? 'Workflow active' : 'Workflow paused'); } break; }
-    case 'wf-run': { const w = store.workflows().find((x) => x.id === id); if (w) runWorkflow(w); break; }
-    case 'wf-delete': { const w = store.workflows().find((x) => x.id === id); if (w) confirmBox('Delete workflow?', `"${w.name}" stops picking up new content.`, 'Delete', () => { store.deleteWorkflow(w.id); toast('Workflow deleted'); }); break; }
+    case 'wf-toggle': { const w = store.workflows().find((x) => x.id === id); if (w) { w.active = (el as HTMLInputElement).checked; store.saveWorkflow(w); scheduleSync(); toast(w.active ? 'Workflow active' : 'Workflow paused'); } break; }
+    case 'wf-run': {
+      const w = store.workflows().find((x) => x.id === id);
+      if (w && runsOnServer(w)) {
+        toast('Checking Instagram…');
+        runServerWorkflow(w.id)
+          .then((r) => toast(r.found ? `Picked up the latest video – see Content` : 'No new video on Instagram'))
+          .catch((err: Error) => toast(err.message));
+      } else if (w) runWorkflow(w);
+      break;
+    }
+    case 'wf-delete': { const w = store.workflows().find((x) => x.id === id); if (w) confirmBox('Delete workflow?', `"${w.name}" stops picking up new content.`, 'Delete', () => { store.deleteWorkflow(w.id); scheduleSync(); toast('Workflow deleted'); }); break; }
     case 'connect': {
       const id = v as PlatformId;
       if (isOAuth(id) && isConfigured(id)) startOAuth(id).catch((e: Error) => toast(e.message));
       else connectDialog(id);
       break;
     }
-    case 'disconnect': { const a = store.account(id!); if (a) confirmBox(`Disconnect @${a.handle}?`, 'Workflows that use this account stop sending to it.', 'Disconnect', () => store.disconnectAccount(a.id)); break; }
+    case 'disconnect': { const a = store.account(id!); if (a) confirmBox(`Disconnect @${a.handle}?`, 'Workflows that use this account stop sending to it.', 'Disconnect', () => { store.disconnectAccount(a.id); scheduleSync(); }); break; }
     case 'export': {
       const data = { user: { ...store.currentUser(), passwordHash: undefined }, accounts: store.accounts(), workflows: store.workflows(), posts: store.posts().map((p) => ({ ...p, thumb: undefined })) };
       const a = document.createElement('a');
@@ -740,7 +756,7 @@ root.addEventListener('click', (e) => {
       a.click();
       break;
     }
-    case 'wipe': confirmBox('Delete all posts and workflows?', 'Connected accounts stay. This cannot be undone.', 'Delete all', () => { store.posts().slice().forEach((p) => store.deletePost(p.id)); store.workflows().slice().forEach((w) => store.deleteWorkflow(w.id)); toast('Deleted'); }); break;
+    case 'wipe': confirmBox('Delete all posts and workflows?', 'Connected accounts stay. This cannot be undone.', 'Delete all', () => { store.posts().slice().forEach((p) => store.deletePost(p.id)); store.workflows().slice().forEach((w) => store.deleteWorkflow(w.id)); scheduleSync(); toast('Deleted'); }); break;
   }
 });
 
@@ -756,4 +772,12 @@ store.onChange(() => {
 // Scheduled posts go out when their time comes, as long as the app is open.
 setInterval(processQueue, 4000);
 
-if (store.currentUser()) { render(); processQueue(); }
+// Server-side workflows: hand over the latest sign-ins, then follow what they publish.
+const heartbeat = () => serverHeartbeat().catch((e: Error) => console.warn('Server workflows:', e.message));
+setInterval(heartbeat, 20_000);
+
+if (store.currentUser()) {
+  render();
+  processQueue();
+  syncNow().catch((e: Error) => console.warn('Workflow sync failed:', e.message)).finally(heartbeat);
+}

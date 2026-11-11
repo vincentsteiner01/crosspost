@@ -9,6 +9,7 @@
 import { integrations } from './config';
 import { refreshAuth, serverCall } from './oauth';
 import { commit, defaultYouTubeOptions, type Account, type Post } from './store';
+import { authedFetch } from './server';
 
 /** Picked files stay in memory for this session; scheduled posts after a reload need the server copy. */
 const files = new Map<string, File>();
@@ -110,8 +111,8 @@ export async function handOverToYouTube(acc: Account, post: Post, caption: strin
 }
 
 async function uploadToServer(post: Post, file: File): Promise<string> {
-  const server = integrations().serverUrl;
-  const res = await fetch(`${server}/media?name=${encodeURIComponent(file.name)}`, { method: 'PUT', headers: { 'Content-Type': file.type || 'application/octet-stream' }, body: file });
+  // Uploads need a server session, so strangers can't store files on our server.
+  const res = await authedFetch(`/media?name=${encodeURIComponent(file.name)}`, { method: 'PUT', headers: { 'Content-Type': file.type || 'application/octet-stream' }, body: file });
   const data = await res.json().catch(() => ({}));
   if (!res.ok || !data.url) throw new PublishError(data.error || 'Das Video konnte nicht auf den Server geladen werden.');
   post.mediaUrl = data.url;

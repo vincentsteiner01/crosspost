@@ -10,10 +10,23 @@ ALLOWED_ORIGIN = "https://vincentsteiner01.github.io"
 TIKTOK_PRIVACY = "SELF_ONLY"
 TIKTOK_VERIFICATION_FILENAME = "tiktokF3W9nYQ2lkglDFjWrNSWbMaWAQ9d89Vn.txt"
 TIKTOK_VERIFICATION_CONTENT = "tiktok-developers-site-verification=F3W9nYQ2lkglDFjWrNSWbMaWAQ9d89Vn"
+# This worker's own address; TikTok fetches workflow videos from <PUBLIC_URL>/media/….
+PUBLIC_URL = "https://crosspost-api.vincentsteiner01.workers.dev"
 
 [[r2_buckets]]
 binding = "MEDIA"
 bucket_name = "crosspost-media"
+
+# Workflows, the accounts they use and every video they picked up (schema: migrations/).
+[[d1_databases]]
+binding = "DB"
+database_name = "crosspost"
+database_id = "ff66ff55-4728-4a5e-8089-5e7052a5576d"
+migrations_dir = "migrations"
+
+# Server-side workflows: check the sources and publish what is due every 5 minutes.
+[triggers]
+crons = ["*/5 * * * *"]
 
 # Keep request logs (Workers Logs, included in the free plan) for debugging.
 [observability]

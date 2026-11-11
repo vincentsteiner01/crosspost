@@ -1,0 +1,134 @@
+// Workflows with an Instagram source run on our server (server/workflows.js),
+// so they keep working while this page is closed. This file holds the session
+// with the server, hands workflows over and reads back what they picked up.
+import { integrations } from './config';
+import * as store from './store';
+import type { Account, DeliveryStatus, Post, Workflow } from './store';
+
+const keyName = () => `crosspost:server:${(store.currentUser()?.email ?? '').toLowerCase()}`;
+const getKey = () => { try { return localStorage.getItem(keyName()); } catch { return null; } };
+const setKey = (k: string | null) => { try { if (k) localStorage.setItem(keyName(), k); else localStorage.removeItem(keyName()); } catch { /* private mode */ } };
+
+const serverUrl = () => integrations().serverUrl;
+export const hasServerSession = () => !!getKey();
+
+/** A connected account proves to the server who you are; Instagram's sign-in never expires. */
+function identityAccount(): Account | undefined {
+  const live = store.accounts().filter((a) => a.auth && (!a.auth.expiresAt || a.auth.expiresAt > Date.now() + 60_000));
+  return ['instagram', 'youtube', 'tiktok', 'facebook'].map((p) => live.find((a) => a.platform === p)).find(Boolean);
+}
+
+async function sessionKey(): Promise<string> {
+  const existing = getKey();
+  if (existing) return existing;
+  const acc = identityAccount();
+  if (!acc?.auth) throw new Error('Connect Instagram, YouTube or TikTok first – the server recognises you by that account.');
+  const res = await fetch(`${serverUrl()}/api/session`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ platform: acc.platform, access_token: acc.auth.accessToken, account_id: acc.auth.remoteId }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.key) throw new Error(data.error || `Server answered ${res.status}`);
+  setKey(data.key);
+  return data.key;
+}
+
+/** A request with the server session; an ended session is set up again once. */
+export async function authedFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  const send = async () => fetch(`${serverUrl()}${path}`, { ...init, headers: { ...(init.headers as Record<string, string> | undefined), Authorization: `Bearer ${await sessionKey()}` } });
+  let res = await send();
+  if (res.status === 401) { setKey(null); res = await send(); }
+  return res;
+}
+
+async function api<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
+  const res = await authedFetch(path, { method, headers: body === undefined ? {} : { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `Server answered ${res.status}`);
+  return data as T;
+}
+
+/** Runs on the server: the source is Instagram, connected for real. */
+export function runsOnServer(w: Workflow) {
+  const src = store.account(w.sourceId);
+  return !!serverUrl() && src?.platform === 'instagram' && !!src.auth;
+}
+
+/** Hand the server-side workflows and the sign-ins they need to the server. */
+export async function syncNow() {
+  if (!serverUrl()) return;
+  const flows = store.workflows().filter(runsOnServer);
+  if (!flows.length && !getKey()) return;
+  const used = new Set(flows.flatMap((w) => [w.sourceId, ...w.destinationIds]));
+  const accounts = store.accounts().filter((a) => a.auth && used.has(a.id)).map((a) => ({
+    id: a.id, platform: a.platform, handle: a.handle, remote_id: a.auth!.remoteId,
+    access_token: a.auth!.accessToken, refresh_token: a.auth!.refreshToken, expires_at: a.auth!.expiresAt,
+  }));
+  await api('/api/sync', 'PUT', {
+    accounts,
+    workflows: flows.map((w) => ({
+      id: w.id, name: w.name, source_id: w.sourceId, destination_ids: w.destinationIds, active: w.active, auto_publish: w.autoPublish,
+      caption_template: w.captionTemplate, hashtags: w.hashtags, delay_minutes: w.delayMinutes,
+    })),
+  });
+}
+
+let syncTimer: number | undefined;
+/** Sync shortly after a change; several changes in a row make one request. */
+export function scheduleSync() {
+  clearTimeout(syncTimer);
+  syncTimer = window.setTimeout(() => { syncNow().catch((e) => console.warn('Workflow sync failed:', e)); }, 400);
+}
+
+// ---------- what the server picked up ----------
+interface ServerJob { id: string; account_id: string; platform: string; status: string; caption: string | null; url: string | null; error: string | null; scheduled_at: number; updated_at: number | null }
+interface ServerItem { id: string; workflow_id: string; caption: string | null; permalink: string | null; thumbnail_url: string | null; created_at: number; jobs: ServerJob[] }
+export interface ServerWorkflowState { id: string; active: number; last_checked: number | null; last_error: string | null }
+
+const STATUS: Record<string, DeliveryStatus> = { draft: 'draft', scheduled: 'scheduled', processing: 'publishing', published: 'published', failed: 'failed' };
+let flowState = new Map<string, ServerWorkflowState>();
+export const serverWorkflowState = (id: string) => flowState.get(id);
+
+function toPost(i: ServerItem): Post {
+  const caption = i.caption ?? '';
+  const waiting = i.jobs.filter((j) => j.status === 'scheduled' || j.status === 'draft').map((j) => j.scheduled_at);
+  return {
+    id: `srv-${i.id}`, remote: { itemId: i.id, permalink: i.permalink ?? undefined },
+    title: (caption.split('\n').map((s) => s.trim()).find(Boolean) ?? 'Instagram video').slice(0, 80), caption,
+    mediaName: 'Instagram video', mediaType: 'video/mp4', mediaSize: 0, thumb: i.thumbnail_url ?? undefined,
+    createdAt: i.created_at, scheduledAt: waiting.length ? Math.min(...waiting) : i.created_at, workflowId: i.workflow_id,
+    deliveries: i.jobs.map((j) => ({ accountId: j.account_id, status: STATUS[j.status] ?? 'failed', caption: j.caption ?? '', error: j.error ?? undefined, url: j.url ?? undefined, at: j.updated_at ?? undefined })),
+  };
+}
+
+export async function refreshServerPosts() {
+  if (!serverUrl() || !getKey()) return;
+  const data = await api<{ items: ServerItem[]; workflows: ServerWorkflowState[] }>('/api/posts');
+  flowState = new Map(data.workflows.map((w) => [w.id, w]));
+  store.setRemotePosts(data.items.map(toPost));
+}
+
+/** While the page is open, move due jobs along faster than the 5-minute cron. */
+export async function serverHeartbeat() {
+  await refreshServerPosts();
+  const now = Date.now();
+  const busy = store.allPosts().some((p) => p.remote && p.deliveries.some((d) => d.status === 'publishing' || (d.status === 'scheduled' && p.scheduledAt <= now)));
+  if (busy) {
+    await api('/api/tick', 'POST');
+    await refreshServerPosts();
+  }
+}
+
+export async function runServerWorkflow(id: string) {
+  await syncNow();
+  const r = await api<{ found: number; processed: number }>(`/api/workflows/${id}/run`, 'POST');
+  await refreshServerPosts().catch(() => {});
+  return r;
+}
+
+export async function itemAction(itemId: string, action: 'approve' | 'retry' | 'delete') {
+  await api(action === 'delete' ? `/api/items/${itemId}` : `/api/items/${itemId}/${action}`, action === 'delete' ? 'DELETE' : 'POST');
+  if (action !== 'delete') await api('/api/tick', 'POST').catch(() => {});
+  await refreshServerPosts();
+}

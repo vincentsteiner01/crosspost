@@ -46,8 +46,23 @@ https://DEIN-NAME.github.io/crosspost/oauth/callback/
    npx wrangler secret put GOOGLE_CLIENT_ID
    npx wrangler secret put GOOGLE_CLIENT_SECRET
    ```
-4. `npx wrangler deploy` – die angezeigte Adresse (z. B. `https://crosspost-api.DEIN-NAME.workers.dev`) ist deine **Server-Adresse**.
-5. Optional: im R2-Bucket eine Lebenszyklus-Regel „Objekte nach 1 Tag löschen“ anlegen, damit hochgeladene Videos nicht liegen bleiben.
+4. Datenbank für die Workflows anlegen und den Schlüssel, der die gespeicherten Anmeldungen verschlüsselt:
+   ```
+   npx wrangler d1 create crosspost          # die ausgegebene database_id in wrangler.toml eintragen
+   npx wrangler d1 migrations apply crosspost --remote
+   openssl rand -base64 32 | npx wrangler secret put TOKEN_KEY
+   ```
+   In `wrangler.toml` bei `PUBLIC_URL` die Server-Adresse eintragen (siehe Schritt 5).
+5. `npx wrangler deploy` – die angezeigte Adresse (z. B. `https://crosspost-api.DEIN-NAME.workers.dev`) ist deine **Server-Adresse**.
+6. Optional: im R2-Bucket eine Lebenszyklus-Regel „Objekte nach 1 Tag löschen“ anlegen, damit hochgeladene Videos nicht liegen bleiben.
+
+### Workflows auf dem Server
+Workflows mit einer **Instagram-Quelle** laufen auf dem Server (`server/workflows.js`), auch wenn die Seite zu ist:
+- Alle 5 Minuten (Cron in `wrangler.toml`) schaut der Server nach neuen Reels/Videos, die nach dem Einschalten des Workflows gepostet wurden.
+- Jedes neue Video wird einmal nach R2 kopiert und dann an jedes Ziel geschickt: YouTube (Upload), TikTok und Instagram (holen es von `PUBLIC_URL/media/…`), Facebook-Seite.
+- „Run now“ nimmt das neueste noch nicht verarbeitete Video, auch ein älteres – gut zum Testen.
+- Die Seite übergibt Workflow und die nötigen Anmeldungen (`PUT /api/sync`); der Server speichert sie mit `TOKEN_KEY` verschlüsselt und erneuert abgelaufene Zugänge selbst.
+- Anmeldung am Server: Ein verbundenes Konto (Instagram, YouTube, TikTok oder Facebook) beweist, wer man ist. Uploads (`PUT /media`) gehen nur noch mit dieser Sitzung.
 
 ## 3. Entwickler-Apps bei den Plattformen anlegen
 

@@ -30,6 +30,8 @@ export interface Post {
   /** Public address of the video on our server, once uploaded there. */
   mediaUrl?: string;
   youtube?: YouTubeOptions;
+  /** Picked up by a workflow on the server (lib/server.ts); lives there, not in this browser. */
+  remote?: { itemId: string; permalink?: string };
 }
 
 const KEY = 'crosspost:v1';
@@ -136,5 +138,15 @@ export function savePost(p: Post) {
 }
 
 export function deletePost(id: string) { db.posts[me()] = posts().filter((p) => p.id !== id); save(); }
+
+// Posts that server-side workflows made; refreshed from the server, never stored here.
+let remote: Post[] = [];
+export function setRemotePosts(list: Post[]) {
+  const changed = JSON.stringify(list) !== JSON.stringify(remote);
+  remote = list;
+  if (changed) listeners.forEach((l) => l());
+}
+/** Posts made here and by server-side workflows, newest first. */
+export const allPosts = () => [...remote, ...posts()].sort((a, b) => b.createdAt - a.createdAt);
 
 export const commit = save;
