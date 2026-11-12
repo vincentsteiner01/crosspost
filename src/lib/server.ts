@@ -152,7 +152,8 @@ export async function planServerPost(body: { title: string; caption: string; sou
 // ---------- what the server picked up ----------
 interface ServerJob { id: string; account_id: string; platform: string; status: string; caption: string | null; url: string | null; error: string | null; scheduled_at: number; updated_at: number | null; options: string | null }
 
-const inInbox = (j: ServerJob) => j.platform === 'tiktok' && j.status === 'published' && /"tiktok_mode":"inbox"/.test(j.options ?? '');
+// Until the draft is posted (then the server knows its address).
+const inInbox = (j: ServerJob) => j.platform === 'tiktok' && j.status === 'published' && !j.url && /"tiktok_mode":"inbox"/.test(j.options ?? '');
 interface ServerItem { id: string; kind: 'workflow' | 'upload' | 'instagram'; title: string | null; workflow_id: string; source_media_id: string; source_account_id: string | null; caption: string | null; permalink: string | null; thumbnail_url: string | null; created_at: number; jobs: ServerJob[] }
 export interface ServerWorkflowState { id: string; active: number; last_checked: number | null; last_error: string | null }
 
@@ -229,3 +230,63 @@ export async function deleteInboxItem(id: string) {
 /** A key for the iPhone Shortcut; a new key ends the previous one. */
 export const createShortcutKey = () => api<{ key: string }>('/api/shortcut-key', 'POST').then((r) => r.key);
 export const inboxEndpoint = () => `${serverUrl()}/api/inbox`;
+
+// ---------- statistics: views, likes … per platform (server/stats.js) ----------
+export type Metric = 'views' | 'likes' | 'comments' | 'shares' | 'saves' | 'reach';
+export const METRICS: Metric[] = ['views', 'likes', 'comments', 'shares', 'saves', 'reach'];
+/** One reading: [taken_at, …the numbers in the order of METRICS]. */
+export type Reading = [number, ...(number | null)[]];
+export type StatEntry = {
+  platform: string; account_id: string; handle: string | null;
+  /** ok: the server follows the numbers · link: a TikTok draft, video not found yet · none: no numbers for this one */
+  state: 'ok' | 'link' | 'none';
+  /** TikTok without numbers yet: a draft in the app (inbox) or a private post (direct); searching: the server still looks for it. */
+  mode?: 'inbox' | 'direct'; searching?: boolean;
+  /** The Instagram original a workflow or cross-post started from. */
+  source?: boolean; job_id?: string; remote_id?: string; url?: string | null;
+  posted_at?: number | null; fetched_at?: number | null; next_check?: number | null; error?: string | null; note?: string | null;
+  history?: Reading[];
+} & Partial<Record<Metric, number | null>>;
+export interface StatVideo { id: string; kind: 'workflow' | 'upload' | 'instagram'; title: string; caption: string; created_at: number; thumbnail_url: string | null; entries: StatEntry[] }
+export interface TikTokVideo { id: string; title: string; created_at: number | null; cover: string | null; url: string | null; views: number | null; linked: boolean }
+
+let stats: { videos: StatVideo[]; at: number } | null = null;
+let statsLoading: Promise<unknown> | null = null;
+let statsError: { message: string; at: number } | null = null;
+export const statsData = () => stats;
+export const statsProblem = () => statsError?.message;
+export const statsBusy = () => !!statsLoading;
+
+/** The numbers from the server; `fresh`: ask the platforms now (each video at most every 10 minutes). */
+export function loadStats(fresh = false): Promise<unknown> {
+  if (statsLoading) return statsLoading;
+  statsLoading = (async () => {
+    if (!serverUrl()) throw new Error('Statistiken brauchen den Crosspost-Server (Einstellungen → Integrationen).');
+    if (!getKey()) await syncNow();
+    const data = fresh ? await api<{ videos: StatVideo[] }>('/api/stats/refresh', 'POST') : await api<{ videos: StatVideo[] }>('/api/stats');
+    stats = { videos: data.videos, at: Date.now() };
+    statsError = null;
+  })().catch((e: Error) => { statsError = { message: e.message, at: Date.now() }; throw e; })
+    .finally(() => { statsLoading = null; store.notify(); });
+  store.notify();
+  return statsLoading;
+}
+
+/** Load once when a page shows the numbers; again after a minute; not over and over after an error. */
+export function ensureStats() {
+  const now = Date.now();
+  if (statsLoading || (statsError && now - statsError.at < 60_000) || (stats && now - stats.at < 60_000)) return;
+  loadStats().catch(() => {});
+}
+
+export const listTikTokVideos = (accountId: string) => api<{ videos: TikTokVideo[] }>(`/api/tiktok/videos?account=${encodeURIComponent(accountId)}`);
+
+/** This TikTok video came from that draft. */
+export async function linkTikTok(jobId: string, remoteId: string) {
+  await api('/api/stats/link', 'POST', { job_id: jobId, remote_id: remoteId });
+  // A load that started before the link would show the old state: wait for it, then load again.
+  await statsLoading?.catch(() => {});
+  // The link is saved; showing it is a bonus.
+  await loadStats().catch(() => {});
+  await refreshServerPosts().catch(() => {});
+}

@@ -84,6 +84,21 @@ Workflows mit einer **Instagram-Quelle** laufen auf dem Server (`server/workflow
 - **Test-Reels (Trial Reels):** Option im Instagram-Block; Instagram zeigt das Reel zuerst Nicht-Followern (`trial_params`, `MANUAL` oder `SS_PERFORMANCE`).
 - **TikTok:** „Als Entwurf in die TikTok-App“ (Inbox, Scope `video.upload`) oder „Direkt posten“. Workflows nutzen `TIKTOK_DEFAULT_MODE` (Standard `inbox`). Direktes Posten ist bis zu TikToks Audit nur privat und nur auf privaten Konten möglich.
 
+### Statistiken
+Unter „Statistiken“ stehen Aufrufe, Likes, Kommentare, Geteilt, Gespeichert und Reichweite je Video nebeneinander, Plattform für Plattform (`server/stats.js`, Migration `0004_stats.sql`):
+- Ein zweiter Cron (stündlich um :17, `STATS_CRON` in `worker.js`) liest die Zahlen 1 Std., 6 Std., 1 Tag, 3, 7 und 30 Tage nach dem Posten, danach wöchentlich bis zum 90. Tag. „Aktualisieren“ liest sofort (`POST /api/stats/refresh`, je Video höchstens alle 10 Minuten). Jede Messung bleibt gespeichert, so lassen sich Videos „nach 24 Std.“ oder „nach 7 Tagen“ vergleichen.
+- Die Zahlen werden nie zusammengerechnet: Jede Plattform zählt Aufrufe anders, und YouTube erlaubt keine daraus berechneten Summen.
+- **YouTube:** Aufrufe, Likes, Kommentare – mit der Berechtigung `youtube.readonly`, die beim Verbinden schon abgefragt wird.
+- **Instagram:** Likes und Kommentare immer; Aufrufe, Geteilt und Gespeichert aus den Zählern des Videos (oder seinen Insights); die Reichweite nur mit `instagram_manage_insights` in der Meta-Login-Konfiguration (`config_id`), danach Instagram neu verbinden. Bei Workflows und nachträglichen Crossposts erscheint auch das Original auf Instagram. Gelesen wird über Metas Batch-Schnittstelle: bis zu 50 Videos in einer Anfrage, jedes mit eigener Antwort.
+- **TikTok:** braucht den Scope `video.list` (im TikTok-Entwicklerportal freischalten, dann in `src/lib/oauth.ts` ergänzen und TikTok neu verbinden – in dieser Reihenfolge). Entwürfe bekommen ihre Video-ID erst, wenn sie in der App öffentlich gepostet und von TikTok geprüft sind; der Server fragt alle 3 Stunden nach (30 Tage lang). Sonst lässt sich das Video unter „Entwurf zuordnen“ von Hand auswählen.
+- **Facebook:** Likes und Kommentare.
+- Reihenfolge beim Ausrollen: **zuerst** die Datenbank, **dann** den Worker (die neuen Spalten stören den alten Code nicht; umgekehrt fehlen sie dem neuen):
+  ```
+  npx wrangler d1 migrations apply crosspost --remote
+  npx wrangler deploy
+  ```
+  Statistiken sind ein Zusatz: Klappt dort etwas nicht, wird trotzdem veröffentlicht.
+
 ## 3. Entwickler-Apps bei den Plattformen anlegen
 
 Überall gilt: als Redirect-/Callback-URL genau die Adresse aus Schritt 1 eintragen.

@@ -8,7 +8,8 @@
 //   POST /publish          publish a video to Facebook, Instagram or TikTok
 //   POST /publish/status   Instagram: publish the Reel once processed; TikTok: is the post through?
 //   /api/…                 server-side workflows (see workflows.js); PUT /media needs its session
-// A cron (wrangler.toml [triggers]) runs the workflows while the site is closed.
+// A cron (wrangler.toml [triggers]) runs the workflows while the site is closed; a second one,
+// hourly, reads the statistics (stats.js).
 //
 // Secrets (set with `npx wrangler secret put NAME`):
 //   FACEBOOK_APP_ID, FACEBOOK_APP_SECRET   (the Meta app – used for Facebook and Instagram)
@@ -31,10 +32,12 @@ const GRAPH = 'https://graph.facebook.com/v25.0';
 const TIKTOK = 'https://open.tiktokapis.com/v2';
 
 const engine = workflowEngine({ call, publish, publishStatus, refresh, GRAPH, TIKTOK });
+// Must match the second cron in wrangler.toml.
+const STATS_CRON = '17 * * * *';
 
 export default {
   async scheduled(controller, env, ctx) {
-    ctx.waitUntil(engine.scheduled(env));
+    ctx.waitUntil(controller.cron === STATS_CRON ? engine.statsCron(env) : engine.scheduled(env));
   },
 
   async fetch(request, env) {
@@ -88,7 +91,9 @@ async function call(input, init) {
   const res = await fetch(input, init);
   const text = await res.text();
   let data;
-  try { data = JSON.parse(text); } catch { data = { raw: text.slice(0, 300) }; }
+  // TikTok sends video ids as 19-digit numbers, too big for JavaScript: keep those as text.
+  const bigAsText = (_k, v, ctx) => (typeof v === 'number' && !Number.isSafeInteger(v) && /^-?\d+$/.test(ctx?.source ?? '') ? ctx.source : v);
+  try { data = JSON.parse(text, bigAsText); } catch { data = { raw: text.slice(0, 300) }; }
   const e = data.error;
   // TikTok answers every request with an error object; code "ok" means success.
   const failed = !res.ok || (e && !(typeof e === 'object' && e.code === 'ok'));
@@ -339,12 +344,29 @@ async function tiktokStatus(access_token, publish_id) {
     throw new Error(`TikTok konnte das Video nicht posten: ${d.fail_reason || 'unbekannter Grund'}`);
   }
   if (d.status !== 'PUBLISH_COMPLETE' && d.status !== 'SEND_TO_USER_INBOX') return { pending: true, container_id: publish_id, status: d.status };
+  // Only public posts that passed TikTok's review have an id (drafts: once the person posted them).
   const postId = d.publicaly_available_post_id?.[0];
-  return { id: String(postId || publish_id), url: postId ? `https://www.tiktok.com/video/${postId}` : undefined };
+  return { id: String(postId || publish_id), video_id: postId ? String(postId) : undefined, url: postId ? `https://www.tiktok.com/video/${postId}` : undefined };
+}
+
+// Instagram writes "+0000"; make it an offset every engine reads.
+const parseTime = (s) => Date.parse(String(s || '').replace(/([+-]\d\d)(\d\d)$/, '$1:$2')) || 0;
+
+/**
+ * Meta reported a Reel as already published (e.g. after an error): find it among the newest
+ * posts – a video posted after `since` with the same caption, and only if exactly one fits.
+ * Never fails – the post went out either way.
+ */
+async function alreadyPublished(account_id, token, since, caption) {
+  if (!since) return { already_published: true };
+  const r = await call(`${GRAPH}/${account_id}/media?fields=id,timestamp,permalink,media_type,caption&limit=10&access_token=${token}`).catch(() => null);
+  const same = (r?.data || []).filter((x) => x.media_type === 'VIDEO' && parseTime(x.timestamp) >= since
+    && (caption == null || String(x.caption || '').trim() === String(caption).trim()));
+  return same.length === 1 ? { already_published: true, id: same[0].id, url: same[0].permalink } : { already_published: true };
 }
 
 /** Instagram: check a Reel container; once Instagram has processed the video, publish it. TikTok: check the post. */
-async function publishStatus({ platform, access_token, account_id, container_id }) {
+async function publishStatus({ platform, access_token, account_id, container_id, since, caption }) {
   if (platform === 'tiktok') {
     if (!access_token || !container_id) throw new Error('access_token und container_id sind erforderlich');
     return tiktokStatus(access_token, container_id);
@@ -354,7 +376,7 @@ async function publishStatus({ platform, access_token, account_id, container_id 
   const token = encodeURIComponent(access_token);
   const s = await call(`${GRAPH}/${container_id}?fields=status_code,status&access_token=${token}`);
   if (s.status_code === 'ERROR' || s.status_code === 'EXPIRED') throw new Error(`Instagram konnte das Video nicht verarbeiten: ${s.status || s.status_code}`);
-  if (s.status_code === 'PUBLISHED') return { already_published: true };
+  if (s.status_code === 'PUBLISHED') return alreadyPublished(account_id, token, since, caption);
   if (s.status_code !== 'FINISHED') return { pending: true, container_id, status: s.status_code };
 
   const publishOnce = () => call(`${GRAPH}/${account_id}/media_publish`, form({ creation_id: container_id, access_token }));
@@ -364,7 +386,7 @@ async function publishStatus({ platform, access_token, account_id, container_id 
   } catch (err) {
     // Meta sometimes reports an error although the Reel went out – look before giving up.
     const after = await call(`${GRAPH}/${container_id}?fields=status_code&access_token=${token}`).catch(() => ({}));
-    if (after.status_code === 'PUBLISHED') return { already_published: true };
+    if (after.status_code === 'PUBLISHED') return alreadyPublished(account_id, token, since, caption);
     // Temporary errors (Meta marks them is_transient, or code 1/2/-1): one more try.
     const d = err.detail || {};
     if (!(d.is_transient || [1, 2, -1].includes(d.code))) throw err;

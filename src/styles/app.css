@@ -295,3 +295,38 @@ a.thumb { text-decoration: none; }
 .linked.demo { background: #f3f4f6; color: #4b5563; }
 .conn-kind { font-size: 11px; font-weight: 700; opacity: .75; }
 a.chip:hover { text-decoration: underline; }
+
+/* ---------- statistics ---------- */
+.cmp-row { display: flex; align-items: flex-start; gap: 14px; padding: 14px 0; border-bottom: 1px solid var(--line); }
+.cmp-row:last-child { border-bottom: 0; }
+.cmp-main { flex: 1; min-width: 0; }
+.cmp-main > a b { display: block; color: #111; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cmp-main > small { color: #6b7280; }
+.cmp-cells { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.cmp-cell { position: relative; display: inline-flex; align-items: center; gap: 8px; padding: 4px 12px 4px 4px; border-radius: 999px; background: var(--soft); font-size: 14px; color: #111; font-variant-numeric: tabular-nums; border: 1px solid transparent; }
+.cmp-cell .pbadge { border-radius: 50%; flex: none; }
+.cmp-cell b { font-weight: 700; }
+.cmp-cell small { color: #6b7280; font-size: 11px; }
+.cmp-cell.best { background: #e7f6ec; border-color: #b9e4c6; }
+.cmp-cell.muted b { color: #9aa0ad; font-weight: 500; }
+.cmp-cell.link { font: inherit; font-size: 13px; color: #4338ca; background: #eef2ff; cursor: pointer; }
+.cmp-cell.link:hover { border-color: #c7cdfa; }
+.cmp-warn { display: inline-grid; place-items: center; width: 16px; height: 16px; border-radius: 50%; background: #fdecee; color: #c0263d; font-size: 11px; font-style: normal; font-weight: 700; }
+.cmp-notes p { display: flex; gap: 10px; align-items: flex-start; margin: 0; font-size: 14px; color: #374151; }
+.cmp-notes p + p { margin-top: 10px; }
+.cmp-notes .pbadge { border-radius: 50%; flex: none; }
+.cmp-table-wrap { overflow-x: auto; margin: 0 -4px; }
+.cmp-table { width: 100%; border-collapse: collapse; font-size: 14px; font-variant-numeric: tabular-nums; }
+.cmp-table th, .cmp-table td { padding: 9px 8px; text-align: right; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.cmp-table thead th { color: #6b7280; font-weight: 500; font-size: 12px; }
+.cmp-table tbody th { text-align: left; font-weight: 600; color: #111; }
+.cmp-table tbody th > * { vertical-align: middle; }
+.cmp-table tbody th .pbadge { border-radius: 50%; margin-right: 8px; }
+.cmp-table tbody th small { color: #6b7280; font-weight: 500; }
+.cmp-table tbody tr:last-child > * { border-bottom: 0; }
+.cmp-table td[colspan] { text-align: left; }
+.cmp-sub { margin: 18px 0 4px; font-size: 14px; color: #374151; }
+.cmp-card { margin-top: 20px; }
+a.cmp-cell { text-decoration: none; }
+a.cmp-cell:hover { border-color: var(--line); }
+#post-stats .hint .btn { margin-top: 6px; }

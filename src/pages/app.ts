@@ -11,6 +11,7 @@ import { defaultYouTubeOptions, type InstagramOptions, type TikTokOptions, type 
 import { url } from '../lib/paths';
 import { forgetAllVideos, forgetVideo, keepVideo, keptVideo, keptVideosUsage } from '../lib/videos';
 import { createShortcutKey, deleteInboxItem, hasServerSession, inboxEndpoint, inboxItems, itemAction, linkWithCode, listInstagramVideos, planServerPost, refreshInbox, runServerWorkflow, runsOnServer, scheduleSync, serverHeartbeat, serverWorkflowState, syncNow, uploadForLater, type InboxItem, type InstagramVideo, type PostSource } from '../lib/server';
+import { METRICS, ensureStats, linkTikTok, listTikTokVideos, loadStats, statsBusy, statsData, statsProblem, type Metric, type StatEntry, type StatVideo, type TikTokVideo } from '../lib/server';
 
 
 const root = document.getElementById('app')!;
@@ -43,11 +44,13 @@ function toast(msg: string) {
   setTimeout(() => t.remove(), 3200);
 }
 
+let pendingRender = false;
 function modal(html: string, onMount: (el: HTMLElement, close: () => void) => void) {
   const back = document.createElement('div');
   back.className = 'modal-back';
   back.innerHTML = `<div class="modal" role="dialog" aria-modal="true">${html}</div>`;
-  const close = () => back.remove();
+  // Redraws skipped while the dialog was open happen when it closes.
+  const close = () => { back.remove(); if (pendingRender) { pendingRender = false; store.notify(); } };
   back.addEventListener('click', (e) => { if (e.target === back) close(); });
   document.addEventListener('keydown', function onKey(e) { if (e.key === 'Escape') { close(); document.removeEventListener('keydown', onKey); } });
   document.body.appendChild(back);
@@ -170,6 +173,7 @@ const NAV = [
   { href: '#/workflows', label: 'Workflows', icon: icons.flow },
   { href: '#/inbox', label: 'Eingang', icon: icons.upload },
   { href: '#/posts', label: 'Inhalte', icon: icons.film },
+  { href: '#/stats', label: 'Statistiken', icon: icons.chart },
   { href: '#/calendar', label: 'Kalender', icon: icons.calendar },
   { href: '#/accounts', label: 'Verbundene Konten', icon: icons.link },
   { href: '#/settings', label: 'Einstellungen', icon: icons.gear },
@@ -687,7 +691,8 @@ function viewPost(params: URLSearchParams) {
         <section class="card"><h2>Ziele</h2>${p.deliveries.map((d) => deliveryBlock(d, p)).join('') || '<p class="hint">Keine Konten.</p>'}</section>
         ${postSettings(p)}
       </div>
-    </div>`, '#/posts');
+    </div>
+    ${p.remote ? postStats(p.remote.itemId) : ''}`, '#/posts');
 }
 
 // One object URL for the video on screen; reused across re-renders, released when another video shows.
@@ -755,6 +760,203 @@ function viewPosts() {
   return shell('Inhalte', `
     <div class="section-head"><div class="tabs">${POST_TABS.map((t) => `<button data-action="tab" data-v="${t}" class="${postTab === t ? 'active' : ''}">${names[t]}</button>`).join('')}</div></div>
     <section class="card">${list.length ? list.map((p) => postRow(p)).join('') : `<div class="empty"><b>Noch nichts da</b>Hier erscheinen Posts, die du erstellst oder die Workflows reinholen.<br><a class="btn primary" href="#/create">Post erstellen</a></div>`}</section>`, '#/posts');
+}
+
+// ---------- statistics: every platform side by side ----------
+const METRIC_LABEL: Record<Metric, string> = { views: 'Aufrufe', likes: 'Likes', comments: 'Kommentare', shares: 'Geteilt', saves: 'Gespeichert', reach: 'Reichweite' };
+/** What each platform tells at all (the rest shows as "–"). */
+const PLATFORM_METRICS: Record<string, Metric[]> = {
+  instagram: ['views', 'likes', 'comments', 'shares', 'saves', 'reach'],
+  tiktok: ['views', 'likes', 'comments', 'shares'],
+  youtube: ['views', 'likes', 'comments'],
+  facebook: ['likes', 'comments'],
+};
+const PLATFORM_ORDER = ['instagram', 'tiktok', 'youtube', 'facebook'];
+const HOUR_MS = 3600_000;
+const DAY_MS = 24 * HOUR_MS;
+type StatAge = 'now' | '24h' | '7d';
+const AGES: Record<StatAge, { label: string; ms: number }> = { now: { label: 'Aktuell', ms: 0 }, '24h': { label: 'Nach 24 Std.', ms: DAY_MS }, '7d': { label: 'Nach 7 Tagen', ms: 7 * DAY_MS } };
+/**
+ * Which readings count as "at this age": the server reads 1 h, 6 h, 1 day, 3 days, 7 days and
+ * 30 days after posting (hourly cron, a failed reading is tried again 12 h later).
+ */
+const AGE_WINDOWS: Record<number, { before: number; after: number; label: string }> = {
+  [HOUR_MS]: { before: 30 * 60_000, after: 2 * HOUR_MS, label: '1 Stunde' },
+  [DAY_MS]: { before: 6 * HOUR_MS, after: 15 * HOUR_MS, label: '24 Stunden' },
+  [7 * DAY_MS]: { before: DAY_MS, after: 2 * DAY_MS, label: '7 Tage' },
+  [30 * DAY_MS]: { before: 3 * DAY_MS, after: 5 * DAY_MS, label: '30 Tage' },
+};
+let statMetric: Metric = 'views';
+let statAge: StatAge = 'now';
+
+const fmtNum = (n: number) => (n >= 1e6 ? `${(n / 1e6).toLocaleString('de-DE', { maximumFractionDigits: 1 })} Mio.` : n.toLocaleString('de-DE'));
+const platformName = (id: string) => (PLATFORM_ORDER.includes(id) ? platform(id as PlatformId).name : id);
+const statBadge = (id: string, size: number) => (PLATFORM_ORDER.includes(id) ? badge(id as PlatformId, size) : '');
+const sortEntries = (list: StatEntry[]) => [...list].sort((a, b) => PLATFORM_ORDER.indexOf(a.platform) - PLATFORM_ORDER.indexOf(b.platform) || Number(!!b.source) - Number(!!a.source));
+
+/** Why a TikTok post has no numbers yet. */
+function tiktokWaiting(e: StatEntry) {
+  if (e.mode === 'direct') {
+    return e.searching
+      ? 'Privater TikTok-Post: TikTok liefert Zahlen nur für öffentliche Videos. Stellst du ihn in der App auf öffentlich, findet Crosspost ihn – oder ordne ihn hier zu.'
+      : 'Privater TikTok-Post: TikTok liefert Zahlen nur für öffentliche Videos. Crosspost sucht ihn nicht mehr von selbst – ist er inzwischen öffentlich, ordne ihn hier zu.';
+  }
+  if (e.searching) return 'Entwurf in der TikTok-App: Sobald du ihn dort öffentlich postest und TikTok ihn geprüft hat, findet Crosspost das Video von selbst. Oder ordne es hier zu.';
+  return 'Crosspost sucht dieses TikTok-Video nicht mehr von selbst – ordne es hier zu.';
+}
+
+/** The number at an age of the video: the reading closest to it (or the latest for "now"). */
+function statValue(e: StatEntry, m: Metric, ageMs: number): { v: number | null; why?: string } {
+  if (e.state === 'link') return { v: null, why: tiktokWaiting(e) };
+  if (e.state === 'none') return { v: null, why: 'Für diesen Post fehlt die Video-ID (z. B. weil er vor den Statistiken veröffentlicht wurde) – dafür gibt es keine Zahlen.' };
+  if (!PLATFORM_METRICS[e.platform]?.includes(m)) return { v: null, why: `${platformName(e.platform)} zeigt „${METRIC_LABEL[m]}“ nicht an.` };
+  if (!ageMs) {
+    const v = e[m] ?? null;
+    return v == null ? { v, why: e.error || e.note || (e.fetched_at ? undefined : 'Noch nicht gelesen – das passiert etwa eine Stunde nach dem Posten.') } : { v };
+  }
+  const w = AGE_WINDOWS[ageMs] ?? { before: ageMs / 4, after: ageMs / 2, label: '' };
+  if (!e.posted_at) return { v: null, why: 'Der Zeitpunkt des Postens ist noch nicht bekannt.' };
+  const target = e.posted_at + ageMs;
+  if (Date.now() < target) return { v: null, why: `Das Video ist noch keine ${w.label} alt.` };
+  const i = METRICS.indexOf(m) + 1;
+  let best: (number | null)[] | null = null;
+  for (const h of e.history ?? []) {
+    if (h[0]! < target - w.before || h[0]! > target + w.after || h[i] == null) continue;
+    if (!best || Math.abs(h[0]! - target) < Math.abs(best[0]! - target)) best = h;
+  }
+  return best ? { v: best[i] as number } : { v: null, why: 'Zu diesem Zeitpunkt gibt es keine Messung (z. B. weil das Video erst später gefunden wurde).' };
+}
+
+function statCells(video: StatVideo) {
+  const list = sortEntries(video.entries);
+  const values = list.map((e) => statValue(e, statMetric, AGES[statAge].ms));
+  const nums = values.map((x) => x.v).filter((x): x is number => x != null);
+  const max = nums.length ? Math.max(...nums) : 0;
+  // Highlight only a real leader: not a tie, not all zero.
+  const top = nums.length > 1 && max > 0 && nums.filter((n) => n === max).length === 1 ? max : null;
+  const href = `#/post?id=srv-${encodeURIComponent(video.id)}`;
+  return list.map((e, i) => {
+    const { v, why } = values[i]!;
+    const who = `${platformName(e.platform)}${e.handle ? ` @${e.handle}` : ''}${e.source ? ' (Original)' : ''}`;
+    if (e.state === 'link') return `<button class="cmp-cell link" data-action="tt-link" data-id="${esc(e.job_id ?? '')}" data-v="${esc(e.account_id)}" title="${esc(why ?? '')}">${statBadge(e.platform, 22)}<span>Video zuordnen</span></button>`;
+    // A tap opens the post, where the reasons for "–" and "!" are written out.
+    return `<a class="cmp-cell ${v != null && v === top ? 'best' : ''} ${v == null ? 'muted' : ''}" href="${href}" title="${esc(`${who}${why ? ` – ${why}` : ''}`)}">${statBadge(e.platform, 22)}<b>${v == null ? '–' : fmtNum(v)}</b>${e.source ? '<small>Original</small>' : ''}${e.error ? '<i class="cmp-warn" aria-label="Problem">!</i>' : ''}</a>`;
+  }).join('');
+}
+
+/** Hints that hold for a whole account (missing permissions, expired sign-ins), once per platform. */
+function statNotes(videos: StatVideo[]) {
+  const seen = new Map<string, { t: string; p: string }>();
+  for (const v of videos) for (const e of v.entries) for (const t of [e.error, e.note]) {
+    // Problems of a single video stay on that video.
+    if (!t || !/Berechtigung|Anmeldung|verbinde|nicht mehr verbunden/i.test(t)) continue;
+    const k = `${e.platform}\n${t}`;
+    if (!seen.has(k)) seen.set(k, { t, p: e.platform });
+  }
+  return seen.size ? `<section class="card cmp-notes">${[...seen.values()].map(({ t, p }) => `<p>${statBadge(p, 20)}<span>${esc(t)}</span></p>`).join('')}</section>` : '';
+}
+
+function viewStats() {
+  const data = statsData();
+  const problem = statsProblem();
+  const busy = statsBusy();
+  const posts = new Map(store.allPosts().map((p) => [p.id, p]));
+  const lastRead = Math.max(0, ...(data?.videos ?? []).flatMap((v) => v.entries.map((e) => e.fetched_at ?? 0)));
+  const head = `<div class="section-head">
+      <div class="tabs">${METRICS.map((m) => `<button data-action="stat-metric" data-v="${m}" class="${statMetric === m ? 'active' : ''}">${METRIC_LABEL[m]}</button>`).join('')}</div>
+      <div class="row"><div class="tabs">${(Object.keys(AGES) as StatAge[]).map((a) => `<button data-action="stat-age" data-v="${a}" class="${statAge === a ? 'active' : ''}">${AGES[a].label}</button>`).join('')}</div>
+      <button class="btn small" data-action="stat-refresh" ${busy ? 'disabled' : ''}>${icons.refresh}${busy ? 'Wird geladen…' : 'Aktualisieren'}</button></div>
+    </div>`;
+  let body: string;
+  if (!data) {
+    body = `<section class="card"><div class="empty">${problem ? `<b>Statistiken nicht verfügbar</b>${esc(problem)}` : '<b>Statistiken werden geladen…</b>'}</div></section>`;
+  } else if (!data.videos.length) {
+    body = `<section class="card"><div class="empty"><b>Noch keine Zahlen</b>Hier erscheinen Aufrufe, Likes und Kommentare deiner Videos – für alles, was über den Server gepostet wird oder von einem Workflow kommt. Die ersten Zahlen gibt es etwa eine Stunde nach dem Posten.<br><a class="btn primary" href="#/create">Post erstellen</a></div></section>`;
+  } else {
+    body = `${statNotes(data.videos)}
+      <section class="card">${data.videos.map((v) => {
+        const p = posts.get(`srv-${v.id}`);
+        const thumb = p?.thumb ?? v.thumbnail_url;
+        const title = v.title || p?.title || v.caption.split('\n').map((x) => x.trim()).find(Boolean) || 'Video';
+        const origin = v.kind === 'upload' ? 'Hochgeladen' : v.kind === 'workflow' ? 'Workflow' : 'Von Instagram weitergepostet';
+        const href = `#/post?id=srv-${encodeURIComponent(v.id)}`;
+        return `<div class="cmp-row">
+          <a class="thumb" href="${href}" aria-label="Post öffnen">${thumb ? `<img src="${esc(thumb)}" alt="" loading="lazy">` : icons.play}</a>
+          <div class="cmp-main"><a class="post-link" href="${href}"><b>${esc(title.slice(0, 120))}</b></a><small>${fmtDate(v.created_at)} · ${origin}</small>
+            <div class="cmp-cells">${statCells(v)}</div></div>
+        </div>`;
+      }).join('')}</section>
+      <p class="hint">${lastRead ? `Zuletzt gelesen: ${fmtDate(lastRead)}. ` : ''}Crosspost liest die Zahlen 1 Std., 6 Std., 1 Tag, 3, 7 und 30 Tage nach dem Posten, danach wöchentlich bis zum 90. Tag. „Nach 24 Std.“ und „Nach 7 Tagen“ vergleichen Videos im gleichen Alter. Die Plattformen zählen Aufrufe unterschiedlich – die Zahlen werden deshalb nicht zusammengerechnet. Tipp auf eine Zahl für die Details.</p>`;
+  }
+  return shell('Statistiken', head + body, '#/stats');
+}
+
+/** The statistics block on a post's page. */
+function postStats(itemId: string) {
+  const data = statsData();
+  const v = data?.videos.find((x) => x.id === itemId);
+  const head = `<div class="section-head"><h2>Statistik</h2><button class="btn small" data-action="stat-refresh" ${statsBusy() ? 'disabled' : ''}>${icons.refresh}${statsBusy() ? 'Wird geladen…' : 'Aktualisieren'}</button></div>`;
+  const open = `<section class="card cmp-card" id="post-stats" data-item="${esc(itemId)}">${head}`;
+  if (!v) return `${open}<p class="hint">${!data ? (statsProblem() ? esc(statsProblem()!) : 'Wird geladen…') : 'Noch keine Zahlen – die ersten gibt es etwa eine Stunde nach dem Posten.'}</p></section>`;
+  const list = sortEntries(v.entries);
+  const cols = METRICS.filter((m) => list.some((e) => PLATFORM_METRICS[e.platform]?.includes(m)));
+  const cell = (e: StatEntry, m: Metric, age: number) => { const { v: n, why } = statValue(e, m, age); return `<td title="${esc(why ?? '')}">${n == null ? '–' : fmtNum(n)}</td>`; };
+  const rowHead = (e: StatEntry) => `<th>${statBadge(e.platform, 22)}<span>${esc(platformName(e.platform))}${e.source ? ' <small>Original</small>' : ''}</span></th>`;
+  // Rows without numbers get a dash; the reason is written out below the table (phones show no tooltips).
+  const rows = list.map((e) => (e.state === 'ok'
+    ? `<tr>${rowHead(e)}${cols.map((m) => cell(e, m, 0)).join('')}</tr>`
+    : `<tr>${rowHead(e)}<td colspan="${cols.length}">–</td></tr>`)).join('');
+  const growth = list.filter((e) => e.state === 'ok' && PLATFORM_METRICS[e.platform]?.includes('views'));
+  const marks: [string, number][] = [['1 Std.', HOUR_MS], ['24 Std.', DAY_MS], ['7 Tage', 7 * DAY_MS], ['30 Tage', 30 * DAY_MS]];
+  const hint = (e: StatEntry, t: string, extra = '') => `<p class="hint">${statBadge(e.platform, 16)} ${esc(t)}${extra}</p>`;
+  const problems = list.flatMap((e) => {
+    if (e.state === 'link') return [hint(e, tiktokWaiting(e), ` <button class="btn small" data-action="tt-link" data-id="${esc(e.job_id ?? '')}" data-v="${esc(e.account_id)}">TikTok-Video zuordnen</button>`)];
+    if (e.state === 'none') return [hint(e, statValue(e, 'views', 0).why ?? '')];
+    return [e.error, e.note].filter(Boolean).map((t) => hint(e, t!));
+  });
+  // Why a value in "Aufrufe nach" is missing (except "not that old yet"), once per platform.
+  const ageNotes = growth.flatMap((e) => {
+    const w = marks.map(([, ms]) => statValue(e, 'views', ms)).find((x) => x.v == null && x.why && !/noch keine/.test(x.why));
+    return w ? [hint(e, w.why!)] : [];
+  });
+  const read = Math.max(0, ...list.map((e) => e.fetched_at ?? 0));
+  return `${open}
+    <div class="cmp-table-wrap"><table class="cmp-table"><thead><tr><th></th>${cols.map((m) => `<th>${METRIC_LABEL[m]}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table></div>
+    ${problems.join('')}
+    ${growth.length ? `<h3 class="cmp-sub">Aufrufe nach</h3><div class="cmp-table-wrap"><table class="cmp-table"><thead><tr><th></th>${marks.map(([l]) => `<th>${l}</th>`).join('')}</tr></thead><tbody>${growth.map((e) => `<tr>${rowHead(e)}${marks.map(([, ms]) => cell(e, 'views', ms)).join('')}</tr>`).join('')}</tbody></table></div>${ageNotes.join('')}` : ''}
+    ${read ? `<p class="hint">Zuletzt gelesen: ${fmtDate(read)}</p>` : ''}
+  </section>`;
+}
+
+/** Redraw only the statistics on a post's page (e.g. while its video plays). */
+function patchPostStats() {
+  const el = root.querySelector<HTMLElement>('#post-stats');
+  if (el?.dataset.item) el.outerHTML = postStats(el.dataset.item);
+}
+
+/** Pick the TikTok video a draft became (when Crosspost doesn't find it by itself). */
+function tiktokLinkDialog(jobId: string, accountId: string) {
+  modal(`<h3>${badge('tiktok', 26)}TikTok-Video zuordnen</h3><p>Welches Video ist aus diesem Post entstanden? Normalerweise findet Crosspost es von selbst, sobald es öffentlich und von TikTok geprüft ist.</p><div class="ig-grid" id="tt-grid"><p class="hint">Wird geladen…</p></div><div class="row"><button class="btn" data-x>Schließen</button></div>`, (el, close) => {
+    el.classList.add('wide');
+    const grid = el.querySelector<HTMLElement>('#tt-grid')!;
+    let list: TikTokVideo[] = [];
+    const day = (t: number | null) => (t ? new Date(t).toLocaleDateString('de-DE', { day: '2-digit', month: 'short', year: 'numeric' }) : '');
+    listTikTokVideos(accountId).then((r) => {
+      list = r.videos;
+      grid.innerHTML = list.length
+        ? list.map((v) => `<button type="button" class="ig-tile" data-tt="${esc(v.id)}" ${v.linked ? 'disabled' : ''} title="${esc(v.title)}">${v.cover ? `<img src="${esc(v.cover)}" alt="" loading="lazy">` : ''}<span class="ig-meta">${v.title ? `${esc(v.title.slice(0, 60))}<br>` : ''}${day(v.created_at)}${v.views != null ? `<br>${fmtNum(v.views)} Aufrufe` : ''}${v.linked ? '<br>Schon zugeordnet' : ''}</span></button>`).join('')
+        : '<p class="hint">Auf diesem TikTok-Konto gibt es noch keine öffentlichen Videos.</p>';
+    }, (e: Error) => { grid.innerHTML = `<p class="hint">${esc(e.message)}</p>`; });
+    grid.addEventListener('click', (e) => {
+      const b = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-tt]');
+      if (!b || b.disabled) return;
+      grid.querySelectorAll('button').forEach((x) => { x.disabled = true; });
+      // While the dialog is open the page doesn't redraw: close first, then show the new numbers
+      // (through store.notify, which leaves a playing video alone).
+      linkTikTok(jobId, b.dataset.tt!).then(() => { close(); store.notify(); toast('TikTok-Video zugeordnet'); }, (err: Error) => { close(); store.notify(); toast(err.message); });
+    });
+    el.querySelector('[data-x]')!.addEventListener('click', close);
+  });
 }
 
 let calMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
@@ -920,7 +1122,7 @@ function render() {
   const views: Record<string, () => string> = {
     '/': viewDashboard, '/create': () => viewCreate(params), '/posts': viewPosts, '/calendar': viewCalendar,
     '/workflows': viewWorkflows, '/workflows/new': () => viewWorkflowEdit(params), '/workflows/edit': () => viewWorkflowEdit(params),
-    '/accounts': viewAccounts, '/settings': viewSettings, '/post': () => viewPost(params), '/inbox': viewInbox,
+    '/accounts': viewAccounts, '/settings': viewSettings, '/post': () => viewPost(params), '/inbox': viewInbox, '/stats': viewStats,
   };
   const view = views[path!] ?? viewDashboard;
   const scroll = window.scrollY;
@@ -935,6 +1137,7 @@ function render() {
 function mount(path: string) {
   if (path === '/inbox') refreshInbox().catch((e: Error) => toast(e.message));
   if (path === '/post') mountPostMedia();
+  if (path === '/stats' || (path === '/post' && root.querySelector('#post-stats'))) ensureStats();
   if (path === '/settings') {
     keptVideosUsage().then((u) => { const el = root.querySelector('#kept-usage'); if (el) el.textContent = u.count ? `Aktuell: ${u.count} ${u.count === 1 ? 'Video' : 'Videos'}, ${fmtSize(u.bytes)}.` : 'Noch keine aufbewahrt.'; });
   }
@@ -1074,6 +1277,10 @@ root.addEventListener('click', (e) => {
     case 'copy-value': { const t = root.querySelector<HTMLInputElement>(`#${v}`)?.value ?? ''; navigator.clipboard.writeText(t).then(() => toast('Kopiert'), () => toast('Kopieren ist hier nicht erlaubt')); break; }
     case 'forget-videos': confirmBox('Aufbewahrte Videos entfernen?', 'Posts bleiben in deiner Inhaltsliste – nur die Videokopien in diesem Browser werden entfernt. Veröffentlichte Posts bleiben auf den Plattformen.', 'Entfernen', () => { forgetAllVideos().then(() => { toast('Aufbewahrte Videos entfernt'); render(); }); }); break;
     case 'tab': postTab = v as typeof postTab; render(); break;
+    case 'stat-metric': statMetric = v as Metric; render(); break;
+    case 'stat-age': statAge = v as StatAge; render(); break;
+    case 'stat-refresh': loadStats(true).then(() => toast('Statistiken aktualisiert'), (err: Error) => toast(err.message)); break;
+    case 'tt-link': if (id && v) tiktokLinkDialog(id, v); break;
     case 'cal': calMonth = v === '0' ? new Date(new Date().getFullYear(), new Date().getMonth(), 1) : new Date(calMonth.getFullYear(), calMonth.getMonth() + Number(v), 1); render(); break;
     case 'wf-toggle': { const w = store.workflows().find((x) => x.id === id); if (w) { w.active = (el as HTMLInputElement).checked; store.saveWorkflow(w); scheduleSync(); toast(w.active ? 'Workflow aktiv' : 'Workflow pausiert'); } break; }
     case 'wf-run': {
@@ -1111,9 +1318,10 @@ window.addEventListener('hashchange', () => { root.querySelector('.shell')?.clas
 store.onChange(() => {
   const a = document.activeElement;
   if (a && /INPUT|TEXTAREA|SELECT/.test(a.tagName) && root.contains(a) && (a as HTMLInputElement).type !== 'checkbox') return;
-  if (document.querySelector('.modal-back')) return;
+  if (document.querySelector('.modal-back')) { pendingRender = true; return; }
   const playing = root.querySelector<HTMLVideoElement>('#detail-media video');
-  if (playing && !playing.paused) return;
+  // Don't interrupt the video; the statistics below it still update.
+  if (playing && !playing.paused) { patchPostStats(); return; }
   render();
 });
 

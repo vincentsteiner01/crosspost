@@ -29,8 +29,9 @@ database_id = "ff66ff55-4728-4a5e-8089-5e7052a5576d"
 migrations_dir = "migrations"
 
 # Server-side workflows: check the sources and publish what is due every 5 minutes.
+# Hourly at :17 – read the statistics (must match STATS_CRON in worker.js).
 [triggers]
-crons = ["*/5 * * * *"]
+crons = ["*/5 * * * *", "17 * * * *"]
 
 # Keep request logs (Workers Logs, included in the free plan) for debugging.
 [observability]

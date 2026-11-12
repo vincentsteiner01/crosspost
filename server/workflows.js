@@ -17,12 +17,15 @@
 //   POST   /api/items/:id/approve     publish jobs that wait for approval
 //   POST   /api/items/:id/retry       try failed jobs again
 //   DELETE /api/items/:id             forget a video (and its copy)
-// Cron (wrangler.toml [triggers]): check the sources and publish what is due.
+//   /api/stats…                       views, likes, comments per platform (see stats.js)
+// Cron (wrangler.toml [triggers]): check the sources and publish what is due; hourly: read the statistics.
 //
 // Needs the bindings DB (D1) and MEDIA (R2), the secret TOKEN_KEY (32 random
 // bytes, base64; encrypts the stored sign-ins) and the vars PUBLIC_URL (this
 // worker's address – TikTok fetches videos from there) and SITE_URL (the app's
 // address, for links the inbox hands out).
+
+import { cleanupStmts, nextCheck, statsEngine, trackStmt } from './stats.js';
 
 const DESTINATIONS = ['youtube', 'tiktok', 'instagram', 'facebook'];
 const CAPTION_LIMITS = { tiktok: 2200, instagram: 2200, youtube: 5000, facebook: 63206 };
@@ -102,6 +105,9 @@ export function workflowEngine({ call, publish, publishStatus, refresh, GRAPH, T
     if (!env.PUBLIC_URL) throw new Error('Server-Einstellung PUBLIC_URL fehlt');
     return env.PUBLIC_URL.replace(/\/$/, '');
   };
+  const stats = statsEngine({ call, publishStatus, freshToken, db, GRAPH, TIKTOK, HttpError });
+  /** Statistics are extra: a problem there never stops a post. */
+  const followStats = (env, stmts) => (stmts.length ? db(env).batch(stmts).catch((e) => console.log(JSON.stringify({ event: 'stats_track_failed', error: String(e.message || e) }))) : undefined);
 
   // ---------- who is asking ----------
   async function requireUser(request, env) {
@@ -327,6 +333,8 @@ export function workflowEngine({ call, publish, publishStatus, refresh, GRAPH, T
         .bind(newId(), w.user_id, itemId, accountId, platform, fitCaption(applyTemplate(w, media.caption || ''), platform), status, at, error, JSON.stringify(options), now());
     });
     if (stmts.length) await D.batch(stmts);
+    // The original on Instagram goes into the statistics too.
+    await followStats(env, [trackStmt(D, { user_id: w.user_id, platform: 'instagram', remote_id: media.id, account_id: w.source_id, url: media.permalink, posted_at: media.ts || now(), next_check: now() })]);
     return 1;
   }
 
@@ -475,16 +483,34 @@ export function workflowEngine({ call, publish, publishStatus, refresh, GRAPH, T
       let res;
       if (job.status === 'processing') {
         if (job.attempts >= MAX_STATUS_CHECKS) throw new Error('Die Verarbeitung des Videos dauert schon über 20 Minuten. Schau direkt im Konto nach.');
-        res = await publishStatus({ platform, access_token: token, account_id: job.remote_id, container_id: job.container_id });
+        // since: an Instagram Reel that went out despite an error is looked up among the newest posts.
+        res = await publishStatus({ platform, access_token: token, account_id: job.acc_remote_id, container_id: job.container_id, since: now() - 45 * 60_000, caption: job.caption || '' });
       } else {
         const key = await ensureCopy(env, job);
         res = platform === 'youtube'
           ? await youtubeUpload(env, token, key, job.caption || '', options, job.item_title || '')
-          : await publish({ platform, access_token: token, account_id: job.remote_id, caption: job.caption || '', title: job.item_title || firstLine(job.caption), video_url: `${publicUrl(env)}/media/${key}`, options }, env);
+          : await publish({ platform, access_token: token, account_id: job.acc_remote_id, caption: job.caption || '', title: job.item_title || firstLine(job.caption), video_url: `${publicUrl(env)}/media/${key}`, options }, env);
       }
       if (res.pending) await set({ status: 'processing', container_id: res.container_id || job.container_id, scheduled_at: now() + STATUS_EVERY_MS, attempts: (job.attempts || 0) + 1 });
       else {
-        await set({ status: 'published', url: res.url || null, error: null });
+        // The platform's id of the video, for the statistics. TikTok has one only for public posts;
+        // drafts get theirs once they are posted (stats.js asks TikTok now and then).
+        let remoteId = (platform === 'tiktok' ? res.video_id : res.id) || null;
+        let url = res.url || null;
+        // A Reel found afterwards (already_published) that another job already has is not this one.
+        if (res.already_published && remoteId && await db(env).prepare("SELECT 1 FROM jobs WHERE user_id = ? AND platform = ? AND remote_id = ? AND id != ?").bind(job.user_id, platform, String(remoteId), job.id).first().catch(() => null)) {
+          remoteId = null;
+          url = null;
+        }
+        await set({ status: 'published', url, error: null });
+        if (remoteId) {
+          const D = db(env);
+          const t = now();
+          await followStats(env, [
+            D.prepare('UPDATE jobs SET remote_id = ? WHERE id = ?').bind(String(remoteId), job.id),
+            trackStmt(D, { user_id: job.user_id, platform, remote_id: remoteId, account_id: job.account_id, url, posted_at: t, next_check: nextCheck(t, t), job_id: job.id }),
+          ]);
+        }
         await dropCopyWhenDone(env, job.item_id);
       }
     } catch (e) {
@@ -498,7 +524,7 @@ export function workflowEngine({ call, publish, publishStatus, refresh, GRAPH, T
   async function processDue(env, userId) {
     const D = db(env);
     const t = now();
-    const due = (await D.prepare(`SELECT j.*, a.platform AS acc_platform, a.remote_id, a.access_token, a.refresh_token, a.expires_at, i.title AS item_title
+    const due = (await D.prepare(`SELECT j.*, a.platform AS acc_platform, a.remote_id AS acc_remote_id, a.access_token, a.refresh_token, a.expires_at, i.title AS item_title
       FROM jobs j LEFT JOIN accounts a ON a.user_id = j.user_id AND a.id = j.account_id LEFT JOIN items i ON i.id = j.item_id
       WHERE j.status IN ('scheduled', 'processing') AND j.scheduled_at <= ? AND (j.lease_until IS NULL OR j.lease_until < ?)
       ${userId ? 'AND j.user_id = ?' : ''} ORDER BY j.scheduled_at LIMIT ?`)
@@ -565,6 +591,8 @@ export function workflowEngine({ call, publish, publishStatus, refresh, GRAPH, T
         .bind(newId(), userId, itemId, d.account_id, platform, fitCaption(String(d.caption ?? body.caption ?? ''), platform), status, at, error, JSON.stringify(cleanOptions(platform, d.options)), t));
     }
     await D.batch(stmts);
+    // An older Instagram video: its numbers on Instagram go next to the new posts' (the first reading brings its real date).
+    if (item.kind === 'instagram') await followStats(env, [trackStmt(D, { user_id: userId, platform: 'instagram', remote_id: item.media, account_id: item.account, url: item.permalink, posted_at: t, next_check: t })]);
     return { id: itemId, scheduled_at: at };
   }
 
@@ -591,7 +619,7 @@ export function workflowEngine({ call, publish, publishStatus, refresh, GRAPH, T
 
   async function itemAction(userId, itemId, action, env) {
     const D = db(env);
-    const item = await D.prepare('SELECT id, r2_key FROM items WHERE user_id = ? AND id = ?').bind(userId, itemId).first();
+    const item = await D.prepare('SELECT id, kind, source_media_id, r2_key FROM items WHERE user_id = ? AND id = ?').bind(userId, itemId).first();
     if (!item) throw new HttpError(404, 'Nicht gefunden');
     const t = now();
     if (action === 'approve') {
@@ -604,7 +632,15 @@ export function workflowEngine({ call, publish, publishStatus, refresh, GRAPH, T
         WHERE user_id = ? AND item_id = ? AND status = 'failed'`).bind(t, t, userId, itemId).run();
       return { changed: r.meta?.changes || 0 };
     }
-    await D.batch([D.prepare('DELETE FROM jobs WHERE user_id = ? AND item_id = ?').bind(userId, itemId), D.prepare('DELETE FROM items WHERE user_id = ? AND id = ?').bind(userId, itemId)]);
+    // Its numbers go too (unless another video in Crosspost is the same one).
+    const keys = await D.prepare("SELECT platform, remote_id FROM jobs WHERE user_id = ? AND item_id = ? AND remote_id IS NOT NULL AND remote_id != ''").bind(userId, itemId).all()
+      .then((r) => r.results.map((j) => [j.platform, j.remote_id]), () => []);
+    if (item.kind !== 'upload') keys.push(['instagram', item.source_media_id]);
+    await D.batch([
+      D.prepare('DELETE FROM jobs WHERE user_id = ? AND item_id = ?').bind(userId, itemId),
+      D.prepare('DELETE FROM items WHERE user_id = ? AND id = ?').bind(userId, itemId),
+    ]);
+    await followStats(env, cleanupStmts(D, userId, keys));
     if (item.r2_key && env.MEDIA) await env.MEDIA.delete(item.r2_key).catch(() => {});
     return { deleted: true };
   }
@@ -630,6 +666,8 @@ export function workflowEngine({ call, publish, publishStatus, refresh, GRAPH, T
     if (m === 'DELETE' && r) return removeFromInbox(userId, r[1], env);
     r = /^\/api\/workflows\/([\w-]{1,64})\/run$/.exec(p);
     if (m === 'POST' && r) return runNow(userId, r[1], env);
+    const s = await stats.handle(request, env, url, userId);
+    if (s !== undefined) return s;
     r = /^\/api\/items\/([\w-]{1,64})(?:\/(approve|retry))?$/.exec(p);
     if (r && ((m === 'POST' && r[2]) || (m === 'DELETE' && !r[2]))) return itemAction(userId, r[1], r[2] || 'delete', env);
     throw new HttpError(404, 'Nicht gefunden');
@@ -645,5 +683,5 @@ export function workflowEngine({ call, publish, publishStatus, refresh, GRAPH, T
     return { workflows: flows.length, found, jobs };
   }
 
-  return { handle, scheduled, requireUser };
+  return { handle, scheduled, statsCron: stats.cron, requireUser };
 }
