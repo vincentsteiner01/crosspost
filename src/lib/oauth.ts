@@ -51,7 +51,8 @@ const PROVIDERS: Record<OAuthPlatform, Provider> = {
     authorize: 'https://www.tiktok.com/v2/auth/authorize/',
     clientParam: 'client_key',
     // video.upload: send videos as drafts to the TikTok app (works before TikTok's audit).
-    scope: 'user.info.basic,video.publish,video.upload',
+    // video.list: read the numbers of the posted videos (statistics).
+    scope: 'user.info.basic,video.publish,video.upload,video.list',
     scopeSeparator: ',',
     responseType: 'code',
     pkce: false,

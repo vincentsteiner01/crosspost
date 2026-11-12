@@ -189,9 +189,9 @@ export function statsEngine({ call, publishStatus, freshToken, db, GRAPH, TIKTOK
   ];
   const IG_GONE = 'Instagram findet dieses Video nicht mehr – gelöscht?';
   const IG_NOTES = {
-    counts: { permission: 'Die Reichweite liefert Instagram erst mit der Statistik-Berechtigung. Sobald sie eingerichtet ist, verbinde Instagram neu.', other: null },
+    counts: { permission: 'Die Reichweite liefert Instagram erst mit der Statistik-Berechtigung. Verbinde Instagram dafür unter „Verbundene Konten“ neu.', other: null },
     base: {
-      permission: 'Aufrufe, Reichweite, Geteilt und Gespeichert liefert Instagram erst mit der Statistik-Berechtigung. Sobald sie eingerichtet ist, verbinde Instagram neu.',
+      permission: 'Aufrufe, Reichweite, Geteilt und Gespeichert liefert Instagram erst mit der Statistik-Berechtigung. Verbinde Instagram dafür unter „Verbundene Konten“ neu.',
       other: 'Für dieses Video liefert Instagram nur Likes und Kommentare.',
     },
   };
@@ -258,7 +258,7 @@ export function statsEngine({ call, publishStatus, freshToken, db, GRAPH, TIKTOK
         if (code === 'rate_limit_exceeded' || code === 'internal_error') break; // try in a later run
         if (code === 'access_token_invalid') throw signInError(e.message);
         const msg = code === 'scope_not_authorized'
-          ? 'Für TikTok-Statistiken fehlt noch die Berechtigung „video.list“. Sobald sie eingerichtet ist, verbinde TikTok neu.'
+          ? 'Für TikTok-Statistiken fehlt noch die Berechtigung „video.list“. Verbinde TikTok dafür unter „Verbundene Konten“ neu.'
           : `TikTok: ${e.message}`;
         for (const id of part) out.set(id, { error: msg });
       }
@@ -508,7 +508,7 @@ export function statsEngine({ call, publishStatus, freshToken, db, GRAPH, TIKTOK
         body: JSON.stringify({ max_count: 20 }),
       });
     } catch (e) {
-      if (e.detail?.code === 'scope_not_authorized') throw new HttpError(400, 'Dafür braucht TikTok noch die Berechtigung „video.list“. Sobald sie eingerichtet ist, verbinde TikTok neu.');
+      if (e.detail?.code === 'scope_not_authorized') throw new HttpError(400, 'Dafür braucht TikTok noch die Berechtigung „video.list“. Verbinde TikTok dafür unter „Verbundene Konten“ neu.');
       throw e;
     }
     const videos = r.data?.videos || [];
